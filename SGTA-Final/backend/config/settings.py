@@ -56,6 +56,10 @@ ALLOWED_HOSTS = [
 if not DEBUG:
     # Solo se activan bajo HTTPS real; en desarrollo (DEBUG=True)
     # forzarlas rompería el servidor local por HTTP.
+    SECURE_PROXY_SSL_HEADER = (
+        'HTTP_X_FORWARDED_PROTO',
+        'https',
+    )
     SECURE_SSL_REDIRECT = True
     SESSION_COOKIE_SECURE = True
     CSRF_COOKIE_SECURE = True
