@@ -58,6 +58,9 @@
         <UsuarioHeader @actualizar="cargarCompras" />
       </header>
 
+      <p v-if="saldoCaja?.saldo_verificable" role="status">Caja Chica {{ saldoCaja.mes }}: saldo disponible Bs {{ saldoCaja.saldo_disponible }} de Bs {{ saldoCaja.fondo_mensual }}; aprobado acumulado Bs {{ saldoCaja.total_aprobado }}.</p>
+      <p v-else-if="saldoCaja" role="alert">{{ saldoCaja.detalle }}</p>
+
 
       <!-- =================================================
            CARGANDO
@@ -632,6 +635,7 @@ const route =
 
 const compras =
   ref([])
+const saldoCaja = ref(null)
 
 const cargando =
   ref(true)
@@ -1198,6 +1202,8 @@ async function ejecutarAccion(
         datos.detalle
         || `No fue posible ${tipo === 'aprobar' ? 'aprobar' : 'rechazar'} la solicitud.`
 
+      if (tipo === 'aprobar') await cargarSaldo()
+
       return
     }
 
@@ -1298,6 +1304,15 @@ function normalizarLista(
 // CARGAR COMPRAS
 // ==========================================================
 
+async function cargarSaldo() {
+  try {
+    const respuesta = await fetch('/api/caja-chica/saldo/', { headers: { Authorization: `Token ${token()}` } })
+    saldoCaja.value = respuesta.ok ? await respuesta.json() : null
+  } catch {
+    saldoCaja.value = null
+  }
+}
+
 async function cargarCompras() {
 
   cargando.value =
@@ -1351,6 +1366,7 @@ async function cargarCompras() {
       await respuesta.json()
 
 
+    await cargarSaldo()
     compras.value =
       normalizarLista(
         datos

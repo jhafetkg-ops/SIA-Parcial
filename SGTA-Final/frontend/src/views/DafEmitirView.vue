@@ -433,6 +433,9 @@ async function emitirCertificacion() {
   
   procesando.value = true
   try {
+    const respuestaSaldo = await fetch('/api/caja-chica/saldo/', { headers: { Authorization: `Token ${token()}` } })
+    const saldo = await respuestaSaldo.json().catch(() => ({}))
+    if (!respuestaSaldo.ok) throw new Error(saldo.detalle || 'No se pudo consultar el saldo de Caja Chica.')
     const doc = new jsPDF()
     
     // Attempt to add Logo
@@ -559,6 +562,14 @@ async function emitirCertificacion() {
     doc.text("Son:", 20, 242)
     doc.text(String(montoALiteral(formCert.monto_certificado) || ''), 30, 242, { maxWidth: 160 })
     
+    // Consulta actual del servidor: esta certificación no reserva saldo ni representa una aprobación histórica.
+    doc.setFont('helvetica', 'normal')
+    doc.setFontSize(8)
+    doc.text(`CAJA CHICA ${saldo.mes} - consulta al emitir (no reserva)`, 20, 254)
+    doc.text(`Fondo mensual: Bs ${saldo.fondo_mensual} | Total aprobado${saldo.saldo_verificable ? '' : ' verificable'}: Bs ${saldo.total_aprobado}`, 20, 259)
+    doc.text(saldo.saldo_verificable ? `Saldo disponible: Bs ${saldo.saldo_disponible}` : 'Saldo disponible: no verificable; revisar respaldos de aprobaciones.', 20, 264)
+    doc.text(`Consulta del servidor: ${saldo.calculado_en}`, 20, 269)
+
     // Signatures
     doc.setFont("helvetica", "bold")
     doc.setFontSize(10)
