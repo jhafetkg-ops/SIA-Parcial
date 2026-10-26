@@ -259,6 +259,7 @@ SIA_LIMITE_CAJA_CHICA = Decimal(
 )
 
 SIA_DIAS_REAPERTURA = int(os.environ.get('SIA_DIAS_REAPERTURA', '7'))
+SIA_MAX_TICKETS_TECNICO = int(os.environ.get('SIA_MAX_TICKETS_TECNICO', '5'))
 
 
 # ==========================================================

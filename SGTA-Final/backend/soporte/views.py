@@ -66,6 +66,8 @@ ROLES_ADMIN = {
     "ADMINISTRADOR_SIGTA",
 }
 
+ESTADOS_CARGA_ACTIVA = ('NUEVO', 'EN_ANALISIS', 'ASIGNADO', 'EN_DIAGNOSTICO', 'EN_EJECUCION')
+
 
 def crear_notificacion(destinatario, ticket, tipo, titulo, mensaje):
     if destinatario:
@@ -1233,6 +1235,7 @@ class TicketViewSet(
         methods=["post"],
         url_path="designar-revision"
     )
+    @transaction.atomic
     def designar_revision(
         self,
         request,
@@ -1250,6 +1253,7 @@ class TicketViewSet(
 
 
         ticket = self.get_object()
+        ticket = type(ticket).objects.select_for_update().get(pk=ticket.pk)
 
 
         if not validar_estado_ticket(
@@ -1368,6 +1372,23 @@ class TicketViewSet(
                     status.HTTP_400_BAD_REQUEST
             )
 
+
+        # R07 se aplica únicamente a esta asignación/reasignación; no a cambios de estado.
+        if ticket.estado.codigo in ESTADOS_CARGA_ACTIVA and ticket.tecnico_asignado_id != tecnico.pk:
+            tecnicos = {tecnico.pk}
+            if ticket.tecnico_asignado_id:
+                tecnicos.add(ticket.tecnico_asignado_id)
+            # La fila estable del destinatario serializa incluso si aún no tiene tickets.
+            list(Usuario.objects.select_for_update().filter(pk__in=tecnicos).order_by('pk'))
+            carga = Ticket.objects.filter(
+                tecnico_asignado=tecnico, estado__codigo__in=ESTADOS_CARGA_ACTIVA
+            ).exclude(pk=ticket.pk).count()
+            limite = settings.SIA_MAX_TICKETS_TECNICO
+            if carga >= limite:
+                return Response({'detalle': (
+                    f'El técnico seleccionado ya tiene {limite} tickets activos asignados. '
+                    'No es posible asignarle otro ticket hasta que libere un cupo.'
+                )}, status=status.HTTP_400_BAD_REQUEST)
 
         ahora = timezone.now()
 
