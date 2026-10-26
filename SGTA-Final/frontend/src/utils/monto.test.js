@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { monto } from './monto.js'
+import { monto, errorCotizaciones } from './monto.js'
 
 test('monto conserva el último valor válido al escribir o pegar caracteres inválidos', () => {
   let listener
@@ -24,4 +24,19 @@ test('monto conserva el último valor válido al escribir o pegar caracteres inv
   el.value = 'letras'
   listener()
   assert.equal(el.value, '50.00')
+})
+
+test('R01 precede a R02 y el formulario usa el límite del servidor', () => {
+  const form = { costo_estimado: '500', cotizaciones: [] }
+  assert.equal(errorCotizaciones(form, '1000'), '')
+  form.costo_estimado = '500.01'
+  assert.match(errorCotizaciones(form, '1000'), /tres cotizaciones/)
+  form.costo_estimado = '1001'
+  assert.match(errorCotizaciones(form, '1000'), /monto total supera/)
+  form.costo_estimado = '900'
+  assert.match(errorCotizaciones(form, '800'), /monto total supera/)
+  form.cotizaciones = [1, 2, 3].map(i => ({ proveedor: `Proveedor ${i}`, precio_unitario: '300', archivo: {} }))
+  assert.equal(errorCotizaciones(form, '1000'), '')
+  form.cotizaciones[1].proveedor = '  PROVEEDOR  1 '
+  assert.match(errorCotizaciones(form, '1000'), /proveedores distintos/)
 })

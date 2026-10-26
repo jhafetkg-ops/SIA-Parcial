@@ -31,7 +31,9 @@ class ReciboTesoreria(models.Model):
 
 
 class CotizacionCompra(models.Model):
-    solicitud = models.ForeignKey('compras.SolicitudCompra', on_delete=models.PROTECT, related_name='cotizaciones')
+    solicitud = models.ForeignKey('compras.SolicitudCompra', on_delete=models.PROTECT, related_name='cotizaciones', null=True, blank=True)
+    soporte = models.ForeignKey('soporte.Ticket', on_delete=models.PROTECT, related_name='cotizaciones', null=True, blank=True)
+    mantenimiento = models.ForeignKey('mantenimiento.RequerimientoMantenimiento', on_delete=models.PROTECT, related_name='cotizaciones', null=True, blank=True)
     proveedor = models.CharField(max_length=180)
     descripcion = models.TextField()
     cantidad = models.PositiveIntegerField()
@@ -41,7 +43,13 @@ class CotizacionCompra(models.Model):
     creada_por = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT)
     creado_en = models.DateTimeField(auto_now_add=True)
     class Meta:
-        constraints = [models.UniqueConstraint(fields=['solicitud'], condition=models.Q(seleccionada=True), name='una_cotizacion_seleccionada')]
+        constraints = [
+            models.UniqueConstraint(fields=['solicitud'], condition=models.Q(seleccionada=True), name='una_cotizacion_seleccionada'),
+            models.CheckConstraint(condition=(
+                (models.Q(solicitud__isnull=False) | models.Q(soporte__isnull=False) | models.Q(mantenimiento__isnull=False))
+                & ~(models.Q(soporte__isnull=False) & models.Q(mantenimiento__isnull=False))
+            ), name='cotizacion_con_expediente'),
+        ]
 
 
 class SolicitudCompra(models.Model):

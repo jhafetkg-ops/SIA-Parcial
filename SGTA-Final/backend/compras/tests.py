@@ -174,6 +174,50 @@ class SeguridadFlujoComprasTests(APITestCase):
     monto estimado una vez que el expediente ya está en
     evaluación/aprobación."""
 
+    def test_r02_creacion_directa_respeta_roles_y_no_guarda_rechazos(self):
+        from pathlib import Path
+        from django.conf import settings
+        from compras.models import SolicitudCompra, CotizacionCompra
+        usuario = self.usuarios['ADMIN']
+        # ADMIN habilita el endpoint; el rol técnico debe seguir imponiendo R01/R02.
+        for codigo in ('ESPECIALISTA', 'AUXILIAR_SERVICIOS_GENERALES'):
+            asignacion = UsuarioRol.objects.create(usuario=usuario, rol=Rol.objects.get(codigo=codigo))
+            for monto, numero, modo, esperado in (
+                ('500', 0, '', 201), ('700', 0, '', 400), ('700', 3, '', 201),
+                ('1001', 3, '', 400), ('700', 3, 'proveedor', 400),
+                ('700', 3, 'archivo', 400), ('700', 3, 'formato', 400), ('700', 4, '', 400),
+            ):
+                with self.subTest(rol=codigo, monto=monto, modo=modo, numero=numero):
+                    self.client.force_authenticate(usuario)
+                    datos = {
+                        'titulo': 'R02 directa', 'descripcion': 'Componentes de prueba',
+                        'area': self.area.pk, 'tipo': 'COMPONENTE', 'cantidad': 2,
+                        'especificaciones': 'Compatibles', 'justificacion': 'Reposición',
+                        'monto_estimado': monto, 'informe': self.archivo('informe.pdf'), 'poa': self.archivo('poa.pdf'),
+                    }
+                    for i in range(1, numero + 1):
+                        datos[f'proveedor_{i}'] = ' proveedor ' if modo == 'proveedor' else f'Proveedor {i}'
+                        datos[f'precio_unitario_{i}'] = '350'
+                        datos[f'cotizacion_{i}'] = SimpleUploadedFile(
+                            f'cotizacion{i}.pdf', b'igual' if modo == 'archivo' else f'oferta {i}'.encode(),
+                            content_type='text/plain' if modo == 'formato' else 'application/pdf',
+                        )
+                    compras, cotizaciones = SolicitudCompra.objects.count(), CotizacionCompra.objects.count()
+                    archivos = set(Path(settings.SIA_PRIVATE_ROOT).rglob('*')) | set(Path(settings.MEDIA_ROOT).rglob('*'))
+                    respuesta = self.client.post('/api/compras/solicitudes/', datos, format='multipart')
+                    self.assertEqual(respuesta.status_code, esperado, respuesta.data)
+                    if esperado == 400:
+                        self.assertEqual(SolicitudCompra.objects.count(), compras)
+                        self.assertEqual(CotizacionCompra.objects.count(), cotizaciones)
+                        self.assertEqual(set(Path(settings.SIA_PRIVATE_ROOT).rglob('*')) | set(Path(settings.MEDIA_ROOT).rglob('*')), archivos)
+                        if monto == '1001':
+                            self.assertIn('el monto total supera', str(respuesta.data))
+                    elif numero:
+                        solicitud = SolicitudCompra.objects.get(pk=respuesta.data['id'])
+                        self.assertEqual(solicitud.cotizaciones.count(), 3)
+                        self.assertTrue(solicitud.proforma.storage.exists(solicitud.proforma.name))
+            asignacion.delete()
+
     def setUp(self):
         call_command("cargar_permisos_sigta")
 

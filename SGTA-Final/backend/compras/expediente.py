@@ -1,5 +1,13 @@
 def documentos_faltantes(solicitud):
     campos = {"informe": "Informe técnico", "proforma": "Cotización", "poa": "POA"}
+    from usuarios.models import obtener_codigos_rol_efectivos
+    tecnico = solicitud.solicitante
+    if solicitud.requerimiento_mantenimiento_id:
+        tecnico = solicitud.requerimiento_mantenimiento.auxiliar_asignado or tecnico
+    if solicitud.monto_estimado is not None and solicitud.monto_estimado <= 500 and set(
+        obtener_codigos_rol_efectivos(tecnico)
+    ).intersection({'ESPECIALISTA', 'AUXILIAR_SERVICIOS_GENERALES'}):
+        campos.pop('proforma')
     if solicitud.origen_modulo in ("SOPORTE", "MANTENIMIENTO"):
         campos["pedido"] = "Proveído de jefatura"
     return [nombre for campo, nombre in campos.items() if not getattr(solicitud, campo)]

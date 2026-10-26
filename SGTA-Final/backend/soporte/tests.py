@@ -96,7 +96,7 @@ class FlujoSoporteCompraTests(APITestCase):
         self.autenticar("ESPECIALISTA")
         r = self.client.post(f"/api/soporte/tickets/{pk}/solicitar-requerimiento-componente/", {
             "informe_compra": SimpleUploadedFile("informe.pdf", b"informe con cuadros"),
-            "cotizacion_archivo": SimpleUploadedFile("cotizacion.pdf", b"cotizacion"),
+            "cotizacion_archivo": SimpleUploadedFile("cotizacion.pdf", b"cotizacion", content_type="application/pdf"),
             "componente_requerido": "Fuente de monitor",
             "especificaciones_tecnicas": "Fuente 19V 2A",
             "cantidad_componente": 2,
@@ -157,7 +157,7 @@ class FlujoSoporteCompraTests(APITestCase):
         self.autenticar("ESPECIALISTA")
         r = self.client.post(f"/api/soporte/tickets/{pk}/solicitar-requerimiento-componente/", {
             "informe_compra": SimpleUploadedFile("informe.pdf", b"informe con cuadros"),
-            "cotizacion_archivo": SimpleUploadedFile("cotizacion.pdf", b"cotizacion"),
+            "cotizacion_archivo": SimpleUploadedFile("cotizacion.pdf", b"cotizacion", content_type="application/pdf"),
             "componente_requerido": "Otro componente",
         }, format="multipart")
         self.assertEqual(r.status_code, 409, r.data)
@@ -187,11 +187,11 @@ class FlujoSoporteCompraTests(APITestCase):
         self.autenticar("ESPECIALISTA")
         r = self.client.post(f"/api/soporte/tickets/{pk}/solicitar-requerimiento-componente/", {
             "informe_compra": SimpleUploadedFile("informe.pdf", b"informe con cuadros"),
-            "cotizacion_archivo": SimpleUploadedFile("cotizacion.pdf", b"cotizacion"),
+            "cotizacion_archivo": SimpleUploadedFile("cotizacion.pdf", b"cotizacion", content_type="application/pdf"),
             "componente_requerido": "GPU de alta gama",
             "especificaciones_tecnicas": "GPU compatible con el equipo",
             "justificacion_compra": "El equipo no puede operar sin reemplazo.",
-            "costo_estimado": "999.00",
+            "costo_estimado": "499.00",
         }, format="multipart")
         self.assertEqual(r.status_code, 200, r.data)
 
@@ -211,7 +211,7 @@ class FlujoSoporteCompraTests(APITestCase):
         self.autenticar("SOLICITANTE")
         r = self.client.post(f"/api/soporte/tickets/{pk}/solicitar-requerimiento-componente/", {
             "informe_compra": SimpleUploadedFile("informe.pdf", b"informe con cuadros"),
-            "cotizacion_archivo": SimpleUploadedFile("cotizacion.pdf", b"cotizacion"),
+            "cotizacion_archivo": SimpleUploadedFile("cotizacion.pdf", b"cotizacion", content_type="application/pdf"),
             "componente_requerido": "Teclado nuevo",
         }, format="multipart")
         self.assertEqual(r.status_code, 403, r.data)
@@ -222,8 +222,9 @@ class FlujoSoporteCompraTests(APITestCase):
         self.autenticar("ESPECIALISTA")
         r = self.client.post(f"/api/soporte/tickets/{pk}/solicitar-requerimiento-componente/", {
             "informe_compra": SimpleUploadedFile("informe.pdf", b"informe con cuadros"),
-            "cotizacion_archivo": SimpleUploadedFile("cotizacion.pdf", b"cotizacion"),
+            "cotizacion_archivo": SimpleUploadedFile("cotizacion.pdf", b"cotizacion", content_type="application/pdf"),
             "componente_requerido": "Mouse nuevo",
+            "costo_estimado": "100.00",
             "especificaciones_tecnicas": "Mouse USB",
             "justificacion_compra": "El periférico actual no funciona.",
         }, format="multipart")
@@ -247,16 +248,18 @@ class FlujoSoporteCompraTests(APITestCase):
         self.assertEqual(r.data["ticket"]["estado_compra_componente"], "BORRADOR")
         self.assertEqual(r.data["ticket"]["estado_codigo"], "EN_EJECUCION")
 
-    def test_genera_informe_de_requerimiento_y_exige_cotizacion(self):
+    def test_genera_informe_de_requerimiento_con_respaldo_opcional(self):
         pk = self.crear_ticket_en_ejecucion("Falta documentación", "PC")
         self.autenticar("ESPECIALISTA")
         r = self.client.post(f"/api/soporte/tickets/{pk}/solicitar-requerimiento-componente/", {
             "componente_requerido": "Fuente", "especificaciones_tecnicas": "ATX",
             "justificacion_compra": "Fuente quemada", "costo_estimado": "100.00",
         }, format="json")
-        self.assertEqual(r.status_code, 400, r.data)
-        self.assertFalse(Ticket.objects.get(pk=pk).estado_compra_componente)
+        self.assertEqual(r.status_code, 200, r.data)
+        self.assertEqual(Ticket.objects.get(pk=pk).estado_compra_componente, 'SOLICITADA')
         self.assertFalse(SolicitudCompra.objects.filter(ticket_soporte_id=pk).exists())
+        pk = self.crear_ticket_en_ejecucion("Con respaldo opcional", "PC")
+        self.autenticar("ESPECIALISTA")
         r = self.client.post(f"/api/soporte/tickets/{pk}/solicitar-requerimiento-componente/", {
             "componente_requerido": "Fuente", "especificaciones_tecnicas": "ATX",
             "justificacion_compra": "Fuente quemada", "costo_estimado": "100.00",
@@ -447,7 +450,9 @@ class FlujoSoporteCompraTests(APITestCase):
                         "componente_requerido": "Componentes solicitados", "especificaciones_tecnicas": "Compatibles",
                         "justificacion_compra": "Reemplazo necesario", "cantidad_componente": 3,
                         "costo_estimado": monto,
-                        "cotizacion_archivo": SimpleUploadedFile("cotizacion.pdf", b"cotizacion"),
+                        **{f"proveedor_{i}": f"Proveedor {i}" for i in range(1, 4)},
+                        **{f"precio_unitario_{i}": "300" for i in range(1, 4)},
+                        **{f"cotizacion_{i}": SimpleUploadedFile(f"cotizacion{i}.pdf", f"cotizacion {i}".encode(), content_type="application/pdf") for i in range(1, 4)},
                     }, format="multipart")
                     rechazado = Decimal(monto) > Decimal(limite)
                     self.assertEqual(r.status_code, 400 if rechazado else 200, r.data)
@@ -455,3 +460,74 @@ class FlujoSoporteCompraTests(APITestCase):
                     if rechazado:
                         self.assertEqual(Ticket.objects.filter(pk=pk).values().get(), anterior)
                         self.assertIn("el monto total supera", r.data["costo_estimado"])
+
+    def test_r02_cotizaciones_api_y_archivos(self):
+        from compras.models import CotizacionCompra
+        from pathlib import Path
+        from django.conf import settings
+        from rest_framework.authtoken.models import Token
+        from rest_framework.test import APIClient
+        casos = (("500", 0, False, 200), ("500", 1, False, 200),
+                 ("500.01", 0, False, 400), ("700", 0, False, 400),
+                 ("700", 2, False, 400), ("700", 3, True, 400),
+                 ("700", 3, False, 200), ("900", 3, False, 200),
+                 ("1001", 3, False, 400))
+        for monto, numero, repetido, esperado in casos:
+            with self.subTest(monto=monto, numero=numero, repetido=repetido):
+                    pk = self.crear_ticket_en_ejecucion("R02", "Equipo")
+                    self.autenticar("ESPECIALISTA")
+                    usuario = self.usuarios["ESPECIALISTA"]
+                    usuario.must_change_password = False
+                    usuario.save(update_fields=['must_change_password'])
+                    token = Token.objects.get_or_create(user=usuario)[0]
+                    self.client.force_authenticate(user=usuario, token=token)
+                    anterior = Ticket.objects.filter(pk=pk).values().get()
+                    registros = CotizacionCompra.objects.count()
+                    archivos = set(Path(settings.SIA_PRIVATE_ROOT).rglob('*'))
+                    datos = {
+                        "componente_requerido": "Componentes", "cantidad_componente": 2,
+                        "especificaciones_tecnicas": "Compatibles", "justificacion_compra": "Necesarios",
+                        "costo_estimado": monto,
+                    }
+                    if Decimal(monto) <= 500 and numero:
+                        datos['cotizacion_archivo'] = SimpleUploadedFile('respaldo.png', b'imagen', content_type='image/png')
+                    else:
+                        for i in range(1, numero + 1):
+                            datos[f'proveedor_{i}'] = '  PROVEEDOR  ' if repetido else f'Proveedor {i}'
+                            datos[f'precio_unitario_{i}'] = '350'
+                            datos[f'cotizacion_{i}'] = SimpleUploadedFile(f'cotizacion{i}.pdf', f'cotizacion {i}'.encode(), content_type='application/pdf')
+                    r = self.client.post(f"/api/soporte/tickets/{pk}/solicitar-requerimiento-componente/", datos, format='multipart')
+                    self.assertEqual(r.status_code, esperado, r.data)
+                    if esperado == 400:
+                        self.assertEqual(Ticket.objects.filter(pk=pk).values().get(), anterior)
+                        self.assertEqual(CotizacionCompra.objects.count(), registros)
+                        self.assertEqual(set(Path(settings.SIA_PRIVATE_ROOT).rglob('*')), archivos)
+                        self.assertFalse(SolicitudCompra.objects.filter(ticket_soporte_id=pk).exists())
+                        if monto == '1001':
+                            self.assertIn('el monto total supera', r.data['costo_estimado'])
+                    elif Decimal(monto) > 500:
+                        objeto = Ticket.objects.get(pk=pk)
+                        self.assertEqual(objeto.cotizaciones.count(), 3)
+                        detalle = self.client.get(f"/api/soporte/tickets/{pk}/")
+                        self.assertEqual(len(detalle.data['cotizaciones']), 3)
+                        for cotizacion in detalle.data['cotizaciones']:
+                            archivo = APIClient().get(cotizacion['documento_url'])
+                            self.assertEqual(archivo.status_code, 200)
+                            self.assertTrue(b''.join(archivo.streaming_content).startswith(b'cotizacion'))
+                            archivo.close()
+                            self.assertEqual(APIClient().get(cotizacion['documento_url'].split('?')[0]).status_code, 401)
+
+                    if esperado == 200:
+                        self.autenticar("JEFE_UTIC")
+                        r = self.client.post(f"/api/soporte/tickets/{pk}/validar-viabilidad-compra/", {}, format='json')
+                        self.assertEqual(r.status_code, 200, r.data)
+                        r = self.client.post(f"/api/soporte/tickets/{pk}/evaluar-viabilidad-compra/", {
+                            'viable': True,
+                            'poa': SimpleUploadedFile('poa.pdf', b'poa', content_type='application/pdf'),
+                            'pedido': SimpleUploadedFile('pedido.pdf', b'pedido', content_type='application/pdf'),
+                        }, format='multipart')
+                        self.assertEqual(r.status_code, 200, r.data)
+                        solicitud = SolicitudCompra.objects.get(ticket_soporte_id=pk)
+                        self.assertEqual(solicitud.cotizaciones.count(), 3 if Decimal(monto) > 500 else 0)
+                        from compras.expediente import documentos_faltantes
+                        self.assertEqual(documentos_faltantes(solicitud), [])
