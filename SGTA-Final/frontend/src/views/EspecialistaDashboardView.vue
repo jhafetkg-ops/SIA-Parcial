@@ -46,15 +46,15 @@
         <section class="panel"><div class="panel-head"><div><small>TRABAJO PRIORITARIO</small><h3>Órdenes que requieren atención</h3></div></div><div class="priority-list"><article v-for="t in trabajoPrioritario" :key="t.id"><div><b>{{t.codigo}} · {{t.titulo}}</b><small>{{t.ubicacion}} · {{etiquetaEstado(t)}} · {{textoSla(t)}}</small></div><button class="primary" @click="continuarOrden(t)">Continuar trabajo</button></article><div v-if="!trabajoPrioritario.length" class="empty compact">No tienes trabajos prioritarios pendientes.</div></div></section>
       </section>
 
-      <section v-else-if="vista==='misordenes'"><div class="toolbar-unified"><label>⌕ <input v-model="busqueda" placeholder="Buscar orden asignada"></label><span>{{ordenesNuevas.length}} orden(es)</span></div><div class="instruction"><b>Revise antes de iniciar</b><span>Abra la orden para comprobar ubicación, equipo, descripción y evidencia. Desde el detalle podrá recibirla e iniciar el diagnóstico.</span></div><div class="cards"><article v-for="t in ordenesNuevas" :key="t.id"><div class="top"><span>{{t.codigo}}</span><em :class="claseSla(t)">{{etiquetaEstado(t)}}</em></div><h3>{{t.titulo}}</h3><ul class="datos"><li><b>Solicitante</b><span>{{t.solicitante_nombre}}</span></li><li><b>Prioridad / SLA</b><span>{{t.prioridad}} · {{textoSla(t)}}</span></li><li><b>Ubicación</b><span>{{t.ubicacion}}</span></li><li><b>Equipo</b><span>{{t.equipo_afectado}}</span></li><li><b>Asignada</b><span>{{fecha(t.asignado_en)}}</span></li></ul><div class="actions"><button class="primary" @click="verTicket(t)">Revisar orden</button></div></article><div v-if="!ordenesNuevas.length" class="empty"><span>✓</span><h3>No tienes órdenes nuevas</h3><p>Las órdenes recibidas se encuentran en Trabajos en curso.</p></div></div></section>
+      <section v-else-if="vista==='misordenes'"><div class="toolbar-unified"><label>⌕ <input v-model="busqueda" placeholder="Buscar orden asignada"></label><span>{{ordenesNuevas.length}} orden(es)</span></div><div class="instruction"><b>Revise antes de iniciar</b><span>Abra la orden para comprobar ubicación, equipo, descripción y evidencia. Desde el detalle podrá recibirla e iniciar el diagnóstico.</span></div><div class="cards"><article v-for="t in ordenesNuevas" :key="t.id"><div class="top"><span>{{t.codigo}}</span><em :class="claseSla(t)">{{etiquetaEstado(t)}}</em></div><h3>{{t.titulo}}</h3><ul class="datos"><li><b>Solicitante</b><span>{{t.solicitante_nombre}}</span></li><li><b>Prioridad / SLA</b><span>{{prioridadTecnico(t)}} · {{textoSla(t)}}</span></li><li><b>Ubicación</b><span>{{t.ubicacion}}</span></li><li><b>Equipo</b><span>{{t.equipo_afectado}}</span></li><li><b>Asignada</b><span>{{fecha(t.asignado_en)}}</span></li></ul><div class="actions"><button class="primary" @click="verTicket(t)">Revisar orden</button></div></article><div v-if="!ordenesNuevas.length" class="empty"><span>✓</span><h3>No tienes órdenes nuevas</h3><p>Las órdenes recibidas se encuentran en Trabajos en curso.</p></div></div></section>
 
-      <section v-else-if="vista==='curso'"><div class="work-filters"><label>Estado<select v-model="filtroCurso.estado"><option value="">Todos</option><option value="diagnostico">En diagnóstico</option><option value="reparacion">En reparación</option><option value="compra">En espera de compra</option><option value="pruebas">En pruebas</option><option value="retrabajo">Devuelta / retrabajo</option></select></label><label>Prioridad<select v-model="filtroCurso.prioridad"><option value="">Todas</option><option v-for="p in ['BAJA','MEDIA','ALTA','CRITICA']" :key="p">{{p}}</option></select></label><label>Buscar<input v-model="filtroCurso.texto" placeholder="Ticket o asunto"></label></div><div class="cards"><article v-for="t in trabajosFiltrados" :key="t.id"><div class="top"><span>{{t.codigo}}</span><em>{{etiquetaEstado(t)}}</em></div><h3>{{t.titulo}}</h3><ul class="datos"><li><b>Prioridad</b><span>{{t.prioridad}}</span></li><li><b>SLA</b><span>{{textoSla(t)}}</span></li><li v-if="t.estado_compra_componente"><b>Compra</b><span>{{t.estado_compra_componente}}</span></li><li v-if="Number(t.rework_count)"><b>Retrabajo</b><span>{{t.observaciones_usuario}}</span></li></ul><div class="actions"><button class="primary" @click="continuarOrden(t)">Continuar</button></div></article><div v-if="!trabajosFiltrados.length" class="empty"><span>✓</span><h3>No tienes trabajos pendientes</h3></div></div></section>
+      <section v-else-if="vista==='curso'"><div class="work-filters"><label>Estado<select v-model="filtroCurso.estado"><option value="">Todos</option><option value="diagnostico">En diagnóstico</option><option value="reparacion">En reparación</option><option value="compra">En espera de compra</option><option value="pruebas">En pruebas</option><option value="retrabajo">Devuelta / retrabajo</option></select></label><label>Prioridad<select v-model="filtroCurso.prioridad"><option value="">Todas</option><option v-for="p in ['BAJA','MEDIA','ALTA','CRITICA']" :key="p">{{p}}</option></select></label><label>Buscar<input v-model="filtroCurso.texto" placeholder="Ticket o asunto"></label></div><div class="cards"><article v-for="t in trabajosFiltrados" :key="t.id"><div class="top"><span>{{t.codigo}}</span><em>{{etiquetaEstado(t)}}</em></div><h3>{{t.titulo}}</h3><ul class="datos"><li><b>Prioridad</b><span>{{prioridadTecnico(t)}}</span></li><li><b>SLA</b><span>{{textoSla(t)}}</span></li><li v-if="t.estado_compra_componente"><b>Compra</b><span>{{t.estado_compra_componente}}</span></li><li v-if="Number(t.rework_count)"><b>Retrabajo</b><span>{{t.observaciones_usuario}}</span></li></ul><div class="actions"><button class="primary" @click="continuarOrden(t)">Continuar</button></div></article><div v-if="!trabajosFiltrados.length" class="empty"><span>✓</span><h3>No tienes trabajos pendientes</h3></div></div></section>
 
       <section v-else-if="vista==='cotizaciones'"><div class="cards"><article v-for="t in porCotizar" :key="t.id"><div class="top"><span>{{t.codigo}}</span><em>{{t.estado_compra_componente || 'Pendiente'}}</em></div><h3>{{t.titulo}}</h3><p>{{t.diagnostico}}</p><div class="actions"><button class="primary" @click="continuarOrden(t)">Llenar informe y cotización</button></div></article><div v-if="!porCotizar.length" class="empty">No hay cotizaciones pendientes.</div></div></section>
 
       <section v-else-if="vista==='historial'" class="panel">
         <div class="toolbar-unified"><label>⌕ <input v-model="busquedaHistorial" placeholder="Buscar por ticket o asunto"></label></div>
-        <div class="table-wrap"><table class="history-table"><thead><tr><th>Ticket</th><th>Asunto</th><th>Prioridad</th><th>Estado</th><th>Fecha</th><th></th></tr></thead><tbody><tr v-for="t in historialFiltrado" :key="t.id"><td>{{t.codigo}}</td><td>{{t.titulo}}</td><td>{{t.prioridad||'s/d'}}</td><td>{{etiquetaEstado(t)}}</td><td>{{fecha(t.actualizado_en)}}</td><td><button class="refresh" @click="verTicket(t)">Ver orden</button></td></tr></tbody></table></div>
+        <div class="table-wrap"><table class="history-table"><thead><tr><th>Ticket</th><th>Asunto</th><th>Prioridad</th><th>Estado</th><th>Fecha</th><th></th></tr></thead><tbody><tr v-for="t in historialFiltrado" :key="t.id"><td>{{t.codigo}}</td><td>{{t.titulo}}</td><td>{{prioridadTecnico(t)||'s/d'}}</td><td>{{etiquetaEstado(t)}}</td><td>{{fecha(t.actualizado_en)}}</td><td><button class="refresh" @click="verTicket(t)">Ver orden</button></td></tr></tbody></table></div>
       </section>
 
       <!-- Pantallas internas del expediente: no forman parte del menú principal. -->
@@ -70,7 +70,7 @@
             <h3>{{ t.titulo }}</h3>
             <ul class="datos">
               <li><b>Asignada</b><span>{{ fecha(t.asignado_en) }}</span></li>
-              <li><b>Prioridad</b><span>{{ t.prioridad || 's/d' }}</span></li>
+              <li><b>Prioridad</b><span>{{ prioridadTecnico(t) || 's/d' }}</span></li>
               <li><b>SLA</b><span>{{ textoSla(t) }}</span></li>
               <li><b>Aula / ambiente</b><span>{{ t.ubicacion || 's/d' }}</span></li>
               <li v-if="t.referencia_ubicacion"><b>Referencia</b><span>{{ t.referencia_ubicacion }}</span></li>
@@ -212,7 +212,7 @@
             <h3>{{ t.titulo }}</h3>
             <div v-if="Number(t.rework_count) > 0" class="mini-alerta">⚠ Pruebas de usuario fallidas: re-evaluar equipo</div>
             <ul class="datos">
-              <li><b>Prioridad</b><span>{{ t.prioridad || 's/d' }}</span></li>
+              <li><b>Prioridad</b><span>{{ prioridadTecnico(t) || 's/d' }}</span></li>
               <li><b>SLA</b><span>{{ textoSla(t) }}</span></li>
               <li v-if="t.componente_entregado_en"><b>Componente</b><span>entregado {{ fecha(t.componente_entregado_en) }}</span></li>
             </ul>
@@ -303,7 +303,7 @@
         <div class="detalle-modal-body">
           <div class="detalle-fila">
             <div class="detalle-campo"><b>Estado</b><span>{{ etiquetaEstado(ticketDetalle) }}</span></div>
-            <div class="detalle-campo"><b>Prioridad</b><span>{{ ticketDetalle.prioridad || 's/d' }}</span></div>
+            <div class="detalle-campo"><b>Prioridad</b><span>{{ prioridadTecnico(ticketDetalle) || 's/d' }}</span></div>
           </div>
           <div class="detalle-fila">
             <div class="detalle-campo"><b>Solicitante</b><span>{{ ticketDetalle.solicitante_nombre }}</span></div>
@@ -341,6 +341,7 @@ import DocumentosExpediente from '../components/DocumentosExpediente.vue'
 import UsuarioHeader from '../components/UsuarioHeader.vue'
 import NotificacionesView from './NotificacionesView.vue'
 import { errorCotizaciones } from '../utils/monto'
+import { prioridadTecnico } from '../utils/portal.js'
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import LogoutModal from '../components/LogoutModal.vue'
@@ -401,7 +402,7 @@ const conRetorno = computed(() => misTickets.value.filter(t => Number(t.rework_c
 const ticketsApoyo = computed(() => tickets.value.filter(t => (t.especialistas_apoyo || []).map(Number).includes(Number(usuario.value.id))))
 const ordenesNuevas = computed(() => porRecibir.value.filter(t => !busqueda.value.trim() || `${t.codigo} ${t.titulo}`.toLowerCase().includes(busqueda.value.toLowerCase())))
 function etapaCurso(t){if(Number(t.rework_count)>0)return'retrabajo';if(t.estado_codigo==='EN_DIAGNOSTICO')return'diagnostico';if(enEsperaDeCompra(t))return'compra';return t.solucion?'pruebas':'reparacion'}
-const trabajosFiltrados = computed(() => trabajosCurso.value.filter(t => (!filtroCurso.estado || etapaCurso(t)===filtroCurso.estado) && (!filtroCurso.prioridad || t.prioridad===filtroCurso.prioridad) && (!filtroCurso.texto.trim() || `${t.codigo} ${t.titulo}`.toLowerCase().includes(filtroCurso.texto.toLowerCase()))))
+const trabajosFiltrados = computed(() => trabajosCurso.value.filter(t => (!filtroCurso.estado || etapaCurso(t)===filtroCurso.estado) && (!filtroCurso.prioridad || prioridadTecnico(t)===filtroCurso.prioridad) && (!filtroCurso.texto.trim() || `${t.codigo} ${t.titulo}`.toLowerCase().includes(filtroCurso.texto.toLowerCase()))))
 const trabajoPrioritario = computed(() => [...porRecibir.value,...trabajosCurso.value].sort((a,b)=>(a.sla_restante_minutos??Infinity)-(b.sla_restante_minutos??Infinity)).slice(0,5))
 
 const historialFiltrado = computed(() => {

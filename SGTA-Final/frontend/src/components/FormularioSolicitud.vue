@@ -210,6 +210,27 @@
 
             </div>
 
+            <template v-if="!esMantenimiento">
+              <div class="field">
+                <label>Categoría <span>*</span></label>
+                <select v-model="form.categoria" required>
+                  <option value="" disabled>Seleccione categoría</option>
+                  <option v-for="categoria in categorias" :key="categoria.id" :value="categoria.id">{{ categoria.nombre }}</option>
+                </select>
+              </div>
+              <div class="field">
+                <label>Prioridad</label>
+                <select v-model="form.prioridad" :disabled="prioridadAutomatica">
+                  <option value="">Pendiente de clasificación por UTIC</option>
+                  <option value="BAJA">Baja</option>
+                  <option value="MEDIA">Media</option>
+                  <option value="ALTA">Alta</option>
+                  <option value="CRITICA">Crítica</option>
+                </select>
+                <small v-if="prioridadAutomatica">La prioridad Alta se asigna automáticamente para Red y Servidores.</small>
+              </div>
+            </template>
+
           </div>
 
         </div>
@@ -507,7 +528,8 @@ import {
   onBeforeUnmount,
   onMounted,
   reactive,
-  ref
+  ref,
+  watch
 } from 'vue'
 
 import {
@@ -553,7 +575,7 @@ const configuracion = computed(() => esMantenimiento.value
       titulo: 'Registrar solicitud de soporte',
       descripcion: 'Registre el problema detectado para que el equipo de UTIC pueda atenderlo.',
       avisoTitulo: 'La prioridad será clasificada por UTIC',
-      avisoDescripcion: 'El Jefe de UTIC revisará la solicitud, clasificará su prioridad y asignará al especialista responsable.',
+      avisoDescripcion: 'Red y Servidores se registran con prioridad Alta. El Jefe de UTIC revisará la solicitud, clasificará el SLA y asignará al especialista responsable.',
     }
 )
 
@@ -622,6 +644,7 @@ const form =
     area: '',
 
     categoria: '',
+    prioridad: '',
 
     ubicacion: '',
     referencia_ubicacion: '',
@@ -631,6 +654,22 @@ const form =
     evidencia: '',
   })
 
+
+const prioridadManual = ref('')
+const prioridadAutomatica = computed(() => {
+  const categoria = categorias.value.find(item => String(item.id) === String(form.categoria))
+  return !esMantenimiento.value && !!categoria && (
+    categoria.codigo === 'RED' || categoria.nombre.trim().toLocaleLowerCase() === 'servidores'
+  )
+})
+watch(prioridadAutomatica, (automatica, anterior) => {
+  if (automatica) {
+    prioridadManual.value = form.prioridad
+    form.prioridad = 'ALTA'
+  } else if (anterior) {
+    form.prioridad = prioridadManual.value
+  }
+}, { flush: 'sync' })
 
 /* =========================================================
    TOKEN
@@ -1104,6 +1143,7 @@ async function crearTicket() {
       datosFormulario.append('tipo', 'CORRECTIVO')
     } else {
       datosFormulario.append('categoria', String(form.categoria))
+      if (form.prioridad) datosFormulario.append('prioridad', form.prioridad)
     }
 
 
@@ -1377,6 +1417,8 @@ function limpiarFormulario(limpiarMensaje = true) {
   form.equipo_afectado = ''
 
   form.evidencia = ''
+  prioridadManual.value = ''
+  form.prioridad = prioridadAutomatica.value ? 'ALTA' : ''
 
 
   quitarArchivo()

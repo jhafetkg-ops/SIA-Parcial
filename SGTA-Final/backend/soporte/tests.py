@@ -42,6 +42,85 @@ class FlujoSoporteCompraTests(APITestCase):
     def autenticar(self, codigo):
         self.client.force_authenticate(self.usuarios[codigo])
 
+    def test_r03_prioridad_por_categoria_desde_api(self):
+        red = CategoriaTicket.objects.get(codigo='RED')
+        # Categoría solo de prueba: no se asume un código de producción para Servidores.
+        servidores = CategoriaTicket.objects.create(codigo='R03_CATALOGO', nombre=' Servidores ')
+        self.autenticar('SOLICITANTE')
+        for categoria in (red, servidores, self.categoria):
+            for prioridad in ('BAJA', 'MEDIA', 'ALTA', 'CRITICA', None):
+                with self.subTest(categoria=categoria.nombre, prioridad=prioridad):
+                    datos = {
+                        'titulo': 'Prueba R03', 'descripcion': 'Solicitud de soporte para probar prioridad.',
+                        'area': self.area.pk, 'categoria': categoria.pk,
+                        'ubicacion': 'Laboratorio', 'equipo_afectado': 'Equipo de prueba',
+                    }
+                    if prioridad is not None:
+                        datos['prioridad'] = prioridad
+                    r = self.client.post('/api/soporte/tickets/', datos, format='json')
+                    self.assertEqual(r.status_code, 201, r.data)
+                    ticket = Ticket.objects.get(pk=r.data['ticket']['id'])
+                    esperada = prioridad if categoria == self.categoria else 'ALTA'
+                    self.assertEqual(r.data['ticket']['prioridad'], esperada)
+                    self.assertEqual(ticket.prioridad, esperada)
+                    self.assertEqual(ticket.estado.codigo, 'NUEVO')
+                    self.assertIsNone(ticket.tecnico_asignado_id)
+                    self.assertIsNone(ticket.clasificado_en)
+                    self.assertIsNone(ticket.sla_horas)
+
+    def test_r03_creacion_comun_conserva_tickets_historicos(self):
+        ticket = Ticket.objects.create(
+            codigo='SOP-R03-HISTORICO', titulo='Creación desde el modelo', descripcion='Descripción',
+            solicitante=self.usuarios['SOLICITANTE'], area=self.area,
+            ubicacion='Laboratorio', equipo_afectado='Router',
+            categoria=CategoriaTicket.objects.get(codigo='RED'),
+            estado=EstadoTicket.objects.get(codigo='NUEVO'), prioridad='BAJA',
+        )
+        ticket.refresh_from_db()
+        self.assertEqual(ticket.prioridad, 'ALTA')
+        # Simula un registro anterior a R03 y comprueba que guardarlo no lo reclasifica.
+        Ticket.objects.filter(pk=ticket.pk).update(prioridad='BAJA')
+        ticket.refresh_from_db()
+        ticket.titulo = 'Título editado'
+        ticket.save()
+        ticket.refresh_from_db()
+        self.assertEqual(ticket.prioridad, 'BAJA')
+        self.autenticar('SOLICITANTE')
+        r = self.client.patch(f'/api/soporte/tickets/{ticket.pk}/', {'prioridad': 'ALTA'}, format='json')
+        self.assertEqual(r.status_code, 200, r.data)
+        ticket.refresh_from_db()
+        self.assertEqual(ticket.prioridad, 'BAJA')
+
+    def test_r03_conserva_clasificacion_sla_y_asignacion(self):
+        self.autenticar('SOLICITANTE')
+        r = self.client.post('/api/soporte/tickets/', {
+            'titulo': 'Red sin servicio', 'descripcion': 'No hay conexión en laboratorio.',
+            'area': self.area.pk, 'categoria': CategoriaTicket.objects.get(codigo='RED').pk,
+            'ubicacion': 'Laboratorio', 'equipo_afectado': 'Router', 'prioridad': 'BAJA',
+        }, format='json')
+        self.assertEqual(r.status_code, 201, r.data)
+        pk = r.data['ticket']['id']
+        self.autenticar('JEFE_UTIC')
+        self.assertEqual(self.client.post(f'/api/soporte/tickets/{pk}/validar-ticket/', {}).status_code, 200)
+        datos_asignacion = {'tecnico_id': self.usuarios['ESPECIALISTA'].pk}
+        r = self.client.post(f'/api/soporte/tickets/{pk}/designar-revision/', datos_asignacion, format='json')
+        self.assertEqual(r.status_code, 400, r.data)
+        self.assertIsNone(Ticket.objects.get(pk=pk).tecnico_asignado_id)
+        # R03 es de creación: UTIC conserva la clasificación posterior y su SLA.
+        r = self.client.post(f'/api/soporte/tickets/{pk}/clasificar-prioridad/', {
+            'prioridad': 'MEDIA', 'criterio_tecnico': 'Existe una conexión de respaldo.',
+        }, format='json')
+        self.assertEqual(r.status_code, 200, r.data)
+        ticket = Ticket.objects.get(pk=pk)
+        self.assertEqual(ticket.prioridad, 'MEDIA')
+        self.assertIsNotNone(ticket.clasificado_en)
+        self.assertIsNotNone(ticket.sla_horas)
+        r = self.client.post(f'/api/soporte/tickets/{pk}/designar-revision/', datos_asignacion, format='json')
+        self.assertEqual(r.status_code, 200, r.data)
+        ticket.refresh_from_db()
+        self.assertEqual(ticket.tecnico_asignado_id, self.usuarios['ESPECIALISTA'].pk)
+        self.assertEqual(ticket.estado.codigo, 'ASIGNADO')
+
     def crear_ticket_en_ejecucion(self, titulo, equipo):
         """Lleva un ticket hasta EN_EJECUCION (registrado, validado,
         clasificado, asignado y diagnosticado) para poder probar el

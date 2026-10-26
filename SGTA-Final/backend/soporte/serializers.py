@@ -1232,6 +1232,16 @@ class TicketSerializer(
         # CREAR
         # ==========================================================
 
+        prioridad = validated_data.pop("prioridad", request.data.get("prioridad"))
+        if prioridad == "":
+            prioridad = None
+        try:
+            prioridad = serializers.ChoiceField(
+                choices=Ticket.PRIORIDADES, allow_null=True
+            ).run_validation(prioridad)
+        except serializers.ValidationError as error:
+            raise serializers.ValidationError({"prioridad": error.detail})
+
         ticket = (
             Ticket.objects.create(
 
@@ -1242,16 +1252,15 @@ class TicketSerializer(
                 estado=estado_nuevo,
 
                 # ==========================================
-                # EL SOLICITANTE NO DEFINE:
+                # UTIC CONSERVA LA CLASIFICACIÓN DE:
                 #
-                # - prioridad
                 # - SLA
                 # - responsable
                 # - estado
                 #
                 # ==========================================
 
-                prioridad=None,
+                prioridad=prioridad,
 
                 sla_horas=None,
 

@@ -867,7 +867,7 @@
           <div
             v-else-if="
               estadoActual === 'EN_ANALISIS'
-              && !ticketSeleccionado.prioridad
+              && !ticketSeleccionado.clasificado_en
             "
             class="action-card"
           >
@@ -983,7 +983,7 @@
           <div
             v-else-if="
               estadoActual === 'EN_ANALISIS'
-              && ticketSeleccionado.prioridad
+              && ticketSeleccionado.clasificado_en
               && !ticketSeleccionado.tecnico_asignado
             "
             class="action-card"
