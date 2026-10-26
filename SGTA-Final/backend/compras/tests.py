@@ -1,11 +1,15 @@
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.core.management import call_command
 from rest_framework.test import APITestCase
+from rest_framework.test import APITransactionTestCase
+from django.test import override_settings
+from decimal import Decimal
 
 from usuarios.models import Area, Rol, Usuario, UsuarioRol
 
 
-class FlujoCajaChicaTests(APITestCase):
+class FlujoCajaChicaTests(APITransactionTestCase):
+    serialized_rollback = True
     def setUp(self):
         # Carga el catálogo real de roles/permisos (Permiso +
         # RolPermiso) para que las pruebas verifiquen la misma
@@ -28,6 +32,181 @@ class FlujoCajaChicaTests(APITestCase):
 
     def autenticar(self, rol):
         self.client.force_authenticate(self.usuarios[rol])
+
+    def compra_r09(self, monto, codigo, estado='VERIFICADO_PENDIENTE_AUTORIZACION'):
+        from compras.models import SolicitudCompra
+        return SolicitudCompra.objects.create(
+            codigo=codigo, titulo='Compra R09', descripcion='Prueba de fondo mensual',
+            solicitante=self.usuarios['SOLICITANTE'], area=self.area, tipo='BIEN', cantidad=1,
+            monto_estimado=Decimal(monto), estado=estado,
+        )
+
+    @override_settings(SIA_FONDO_MENSUAL=Decimal('5000'))
+    def test_r09_fondo_aprobaciones_y_saldo_exacto(self):
+        from usuarios.models import DocumentoProceso
+        from compras.tesoreria import TIPO_APROBACION_CAJA_CHICA
+        self.autenticar('DIRECTOR')
+        self.compra_r09('900', 'R09-PENDIENTE', 'CREADO_PENDIENTE_DAF')
+        self.compra_r09('300', 'R09-RECHAZADA', 'RECHAZADO')
+        self.compra_r09('9000', 'R09-FINANZAS', 'APROBADO_PARA_DESEMBOLSO')
+        self.assertEqual(self.client.get('/api/caja-chica/saldo/').data['saldo_disponible'], '5000.00')
+        for indice, monto, esperado in ((0, '500', '4500.00'), (1, '1000', '3500.00'), (2, '1500', '2000.00'), (3, '1500', '500.00')):
+            compra = self.compra_r09(monto, f'R09-APR-{indice}')
+            r = self.client.post(f'/api/compras/solicitudes/{compra.pk}/visto-bueno-director/', {}, format='json')
+            self.assertEqual(r.status_code, 200, r.data)
+            self.assertEqual(self.client.get('/api/caja-chica/saldo/').data['saldo_disponible'], esperado)
+            self.assertEqual(self.client.post(f'/api/compras/solicitudes/{compra.pk}/visto-bueno-director/', {}).status_code, 409)
+        rechazada = self.compra_r09('600', 'R09-SIN-SALDO')
+        anterior = type(rechazada).objects.filter(pk=rechazada.pk).values().get()
+        r = self.client.post(f'/api/compras/solicitudes/{rechazada.pk}/visto-bueno-director/', {})
+        self.assertEqual(r.status_code, 400, r.data)
+        self.assertIn('saldo disponible de Caja Chica es insuficiente', r.data['detalle'])
+        self.assertEqual(type(rechazada).objects.filter(pk=rechazada.pk).values().get(), anterior)
+        exacta = self.compra_r09('500', 'R09-SALDO-EXACTO')
+        self.assertEqual(self.client.post(f'/api/compras/solicitudes/{exacta.pk}/visto-bueno-director/', {}).status_code, 200)
+        saldo = self.client.get('/api/caja-chica/saldo/').data
+        self.assertEqual(saldo['total_aprobado'], '5000.00')
+        self.assertEqual(saldo['saldo_disponible'], '0.00')
+        self.assertEqual(DocumentoProceso.objects.filter(tipo=TIPO_APROBACION_CAJA_CHICA).count(), 5)
+        # Un guardado posterior no cambia el importe aprobado de la instantánea.
+        exacta.refresh_from_db()
+        exacta.monto_estimado = Decimal('900')
+        exacta.estado = 'FONDOS_DESEMBOLSADOS'
+        exacta.save()
+        self.assertEqual(self.client.get('/api/caja-chica/saldo/').data['total_aprobado'], '5000.00')
+
+    @override_settings(SIA_FONDO_MENSUAL=Decimal('5000'))
+    def test_r09_periodo_la_paz_y_antecedentes_sin_fecha(self):
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
+        from unittest.mock import patch
+        from auditoria.models import Bitacora
+        zona = ZoneInfo('America/La_Paz')
+        for codigo, fecha, monto in (
+            ('R09-LEGADO', datetime(2026, 11, 1, 2, 30, tzinfo=ZoneInfo('UTC')), '100'),
+            ('R09-OTRO-ANIO', datetime(2025, 10, 31, 20, tzinfo=zona), '300'),
+        ):
+            compra = self.compra_r09(monto, codigo, 'CERRADO_ARCHIVADO')
+            registro = Bitacora.objects.create(accion='VISTO_BUENO_DIRECTOR', modulo='Compras', detalle=f'{codigo}: Director autorizó.')
+            Bitacora.objects.filter(pk=registro.pk).update(fecha=fecha)
+        self.autenticar('DIRECTOR')
+        with patch('django.utils.timezone.now', return_value=datetime(2026, 10, 31, 23, tzinfo=zona)):
+            saldo = self.client.get('/api/caja-chica/saldo/').data
+            self.assertEqual(saldo['mes'], '2026-10')
+            self.assertEqual(saldo['saldo_disponible'], '4900.00')
+        with patch('django.utils.timezone.now', return_value=datetime(2026, 11, 1, 0, tzinfo=zona)):
+            saldo = self.client.get('/api/caja-chica/saldo/').data
+            self.assertEqual(saldo['mes'], '2026-11')
+            self.assertEqual(saldo['saldo_disponible'], '5000.00')
+            historica = self.compra_r09('100', 'R09-SIN-FECHA', 'APROBADO_PARA_DESEMBOLSO')
+            pendiente = self.compra_r09('100', 'R09-BLOQUEADA')
+            saldo = self.client.get('/api/caja-chica/saldo/').data
+            self.assertFalse(saldo['saldo_verificable'])
+            self.assertIsNone(saldo['saldo_disponible'])
+            self.assertIn(historica.codigo, saldo['aprobaciones_sin_respaldo'])
+            self.assertEqual(self.client.post(f'/api/compras/solicitudes/{pendiente.pk}/visto-bueno-director/', {}).status_code, 400)
+            pendiente.refresh_from_db()
+            self.assertEqual(pendiente.estado, 'VERIFICADO_PENDIENTE_AUTORIZACION')
+
+    def test_r09_saldo_y_snapshot_solo_para_roles_financieros(self):
+        from usuarios.models import DocumentoProceso
+        from compras.tesoreria import TIPO_APROBACION_CAJA_CHICA
+        self.client.force_authenticate(user=None)
+        self.assertEqual(self.client.get('/api/caja-chica/saldo/').status_code, 401)
+        for rol in ('SOLICITANTE', 'ENCARGADO_COMPRAS_ALMACEN'):
+            self.autenticar(rol)
+            self.assertEqual(self.client.get('/api/caja-chica/saldo/').status_code, 403)
+        for rol in ('DIRECTOR', 'DAF', 'TESORERIA', 'ADMIN'):
+            self.autenticar(rol)
+            self.assertEqual(self.client.get('/api/caja-chica/saldo/').status_code, 200)
+        compra = self.compra_r09('500', 'R09-SEGURIDAD')
+        self.autenticar('DIRECTOR')
+        self.assertEqual(self.client.post(f'/api/compras/solicitudes/{compra.pk}/visto-bueno-director/', {}).status_code, 200)
+        documento = DocumentoProceso.objects.get(compra=compra, tipo=TIPO_APROBACION_CAJA_CHICA)
+        self.autenticar('SOLICITANTE')
+        documentos = self.client.get(f'/api/compras/solicitudes/{compra.pk}/documentos/')
+        self.assertEqual(documentos.status_code, 200)
+        self.assertNotIn(documento.pk, [d['id'] for d in documentos.data])
+        self.assertEqual(self.client.get(f'/api/compras/solicitudes/{compra.pk}/documentos/{documento.pk}/pdf/').status_code, 403)
+
+    @override_settings(SIA_FONDO_MENSUAL=Decimal('1000'))
+    def test_r09_aprobaciones_concurrentes_postgresql(self):
+        from concurrent.futures import ThreadPoolExecutor
+        from threading import Barrier
+        from django.db import connection, connections
+        from rest_framework.test import APIClient
+        from usuarios.models import DocumentoProceso
+        from compras.tesoreria import TIPO_APROBACION_CAJA_CHICA
+        if connection.vendor != 'postgresql':
+            self.skipTest('R09 requiere PostgreSQL real para comprobar el bloqueo asesor.')
+        candidatos = [self.compra_r09('700', f'R09-PG-{i}').pk for i in range(2)]
+        segundo = Usuario.objects.create_user(username='director-r09', email='director-r09@example.invalid', nombre_completo='Otro Director')
+        UsuarioRol.objects.create(usuario=segundo, rol=Rol.objects.get(codigo='DIRECTOR'))
+        barrera = Barrier(2)
+
+        def sincronizar(execute, sql, params, many, context):
+            if 'pg_advisory_xact_lock' in sql:
+                barrera.wait(timeout=20)
+            return execute(sql, params, many, context)
+
+        def aprobar(datos):
+            pk, usuario = datos
+            try:
+                cliente = APIClient()
+                cliente.force_authenticate(usuario)
+                with connections['default'].execute_wrapper(sincronizar):
+                    return cliente.post(f'/api/compras/solicitudes/{pk}/visto-bueno-director/', {}).status_code
+            finally:
+                connections.close_all()
+
+        with ThreadPoolExecutor(max_workers=2) as ejecutor:
+            resultados = list(ejecutor.map(aprobar, zip(candidatos, (self.usuarios['DIRECTOR'], segundo))))
+        self.assertEqual(sorted(resultados), [200, 400])
+        self.assertEqual(DocumentoProceso.objects.filter(tipo=TIPO_APROBACION_CAJA_CHICA).count(), 1)
+        self.autenticar('DIRECTOR')
+        self.assertEqual(self.client.get('/api/caja-chica/saldo/').data['saldo_disponible'], '300.00')
+
+    @override_settings(SIA_FONDO_MENSUAL=Decimal('5000'))
+    def test_r09_pdf_recibo_conserva_saldo_al_aprobar(self):
+        import os
+        from pathlib import Path
+        from io import BytesIO
+        from pypdf import PdfReader
+        self.autenticar('DIRECTOR')
+        primera = self.compra_r09('500', 'R09-PDF-PRIMERA')
+        segunda = self.compra_r09('1000', 'R09-PDF-SEGUNDA')
+        for compra in (primera, segunda):
+            self.assertEqual(self.client.post(f'/api/compras/solicitudes/{compra.pk}/visto-bueno-director/', {}).status_code, 200)
+        self.autenticar('TESORERIA')
+        with override_settings(SIA_FONDO_MENSUAL=Decimal('8000')):
+            r = self.client.post(f'/api/compras/solicitudes/{primera.pk}/recibos-tesoreria/', {
+                'monto_desembolsado': '500', 'responsable_adquisicion': 'Juan Pérez', 'tipo_desembolso': 'Efectivo',
+            }, format='json')
+        self.assertEqual(r.status_code, 201, r.data)
+        self.assertEqual(r.data['datos']['saldo_aprobacion']['saldo_disponible'], '4500.00')
+        archivo = self.client.get(r.data['original_url'])
+        contenido = b''.join(archivo.streaming_content)
+        texto = '\n'.join(p.extract_text() for p in PdfReader(BytesIO(contenido)).pages)
+        for esperado in ('5000.00', '500.00', '4500.00', 'SALDO AL APROBAR'):
+            self.assertIn(esperado, texto)
+        if os.environ.get('SIA_R09_PDF_DIR'):
+            destino = Path(os.environ['SIA_R09_PDF_DIR'])
+            destino.mkdir(parents=True, exist_ok=True)
+            (destino / 'recibo-r09.pdf').write_bytes(contenido)
+
+    def test_r09_aprobacion_y_snapshot_son_atomicos(self):
+        from unittest.mock import patch
+        from auditoria.models import Bitacora
+        from usuarios.models import DocumentoProceso
+        compra = self.compra_r09('500', 'R09-ATOMICA')
+        anterior = type(compra).objects.filter(pk=compra.pk).values().get()
+        self.autenticar('DIRECTOR')
+        with patch('usuarios.documentos.emitir_documento', side_effect=RuntimeError('Fallo del respaldo')):
+            with self.assertRaises(RuntimeError):
+                self.client.post(f'/api/compras/solicitudes/{compra.pk}/visto-bueno-director/', {})
+        self.assertEqual(type(compra).objects.filter(pk=compra.pk).values().get(), anterior)
+        self.assertFalse(DocumentoProceso.objects.filter(compra=compra).exists())
+        self.assertFalse(Bitacora.objects.filter(accion='VISTO_BUENO_DIRECTOR').exists())
 
     def test_daf_no_aprueba_incompletos_y_solo_certifica_evaluados(self):
         from compras.models import SolicitudCompra

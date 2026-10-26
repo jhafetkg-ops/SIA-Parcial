@@ -260,6 +260,9 @@ SIA_LIMITE_CAJA_CHICA = Decimal(
 
 SIA_DIAS_REAPERTURA = int(os.environ.get('SIA_DIAS_REAPERTURA', '7'))
 SIA_MAX_TICKETS_TECNICO = int(os.environ.get('SIA_MAX_TICKETS_TECNICO', '5'))
+SIA_FONDO_MENSUAL = Decimal(os.environ.get('SIA_FONDO_MENSUAL', '5000'))
+if not SIA_FONDO_MENSUAL.is_finite() or SIA_FONDO_MENSUAL < 0:
+    raise ValueError('SIA_FONDO_MENSUAL debe ser un importe finito no negativo.')
 
 
 # ==========================================================

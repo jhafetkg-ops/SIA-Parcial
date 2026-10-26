@@ -14,9 +14,11 @@ from rest_framework.permissions import (
 
 from rest_framework.response import Response
 from rest_framework.decorators import action
-from django.db import transaction
+from django.db import connection, transaction
+from django.conf import settings
 from django.utils import timezone
 from decimal import Decimal, InvalidOperation
+from zoneinfo import ZoneInfo
 
 
 from usuarios.models import RolPermiso, obtener_codigos_rol_efectivos
@@ -160,6 +162,12 @@ class SolicitudCompraViewSet(
     viewsets.ModelViewSet
 ):
 
+    def saldo_caja_chica(self, request):
+        from .tesoreria import puede_consultar_saldo, saldo_mensual
+        if not puede_consultar_saldo(request.user):
+            return Response({'detalle': 'No tiene permiso para consultar el saldo de Caja Chica.'}, status=403)
+        return Response(saldo_mensual())
+
     @action(detail=True, methods=['get', 'post'], url_path='actas-almacen')
     def actas_almacen(self, request, pk=None):
         from .actas_almacen import actas
@@ -182,10 +190,18 @@ class SolicitudCompraViewSet(
 
     @action(detail=True, methods=['get'], url_path='documentos')
     def documentos(self, request, pk=None):
-        return documentos_expediente(self, request, pk)
+        from .tesoreria import TIPO_APROBACION_CAJA_CHICA, puede_consultar_saldo
+        respuesta = documentos_expediente(self, request, pk)
+        if not puede_consultar_saldo(request.user):
+            respuesta.data = [d for d in respuesta.data if d['tipo'] != TIPO_APROBACION_CAJA_CHICA]
+        return respuesta
 
     @action(detail=True, methods=['get'], url_path=r'documentos/(?P<documento_id>[0-9]+)/pdf')
     def documento_pdf(self, request, pk=None, documento_id=None):
+        from .tesoreria import TIPO_APROBACION_CAJA_CHICA, puede_consultar_saldo
+        solicitud = self.get_object()
+        if solicitud.documentos_sia.filter(pk=documento_id, tipo=TIPO_APROBACION_CAJA_CHICA).exists() and not puede_consultar_saldo(request.user):
+            return Response({'detalle': 'No tiene permiso para consultar el saldo de Caja Chica.'}, status=403)
         return pdf_documento(self, request, pk, documento_id)
 
     @action(detail=True, methods=['get'], url_path=r'cotizaciones/(?P<cotizacion_id>[0-9]+)/archivo')
@@ -623,10 +639,56 @@ class SolicitudCompraViewSet(
         return self._transicion(request, solicitud, "CERTIFICAR_PRESUPUESTO", ["EVALUADO_PENDIENTE_CERTIFICACION"], "VERIFICADO_PENDIENTE_AUTORIZACION", "CERTIFICAR_PRESUPUESTO", "Certificación emitida; expediente derivado al Director para autorizar la compra.")
 
     @action(detail=True, methods=["post"], url_path="visto-bueno-director")
+    @transaction.atomic
     def visto_bueno_director(self, request, pk=None):
-        # Igual que certificar-daf: al dar el visto bueno, el expediente
-        # queda automáticamente disponible para Tesorería (desembolso).
-        return self._transicion(request, self.get_object(), "DAR_VISTO_BUENO", ["VERIFICADO_PENDIENTE_AUTORIZACION"], "APROBADO_PARA_DESEMBOLSO", "VISTO_BUENO_DIRECTOR", "Director autorizó; expediente derivado automáticamente a Tesorería para desembolso.")
+        from .tesoreria import TIPO_APROBACION_CAJA_CHICA, saldo_mensual
+        from usuarios.documentos import emitir_documento
+        solicitud = self.get_object()
+        solicitud = SolicitudCompra.objects.select_for_update().get(pk=solicitud.pk)
+        if not tiene_permiso(request.user, 'DAR_VISTO_BUENO'):
+            return respuesta_sin_permiso('DAR_VISTO_BUENO')
+        if solicitud.cerrado_inmutable:
+            return Response({'detalle': 'El expediente está cerrado y es inmutable.'}, status=409)
+        if solicitud.estado != 'VERIFICADO_PENDIENTE_AUTORIZACION':
+            return Response({'detalle': f'Transición no permitida desde {solicitud.estado}.'}, status=409)
+        snapshot = None
+        if solicitud.via_adquisicion == 'CAJA_CHICA':
+            monto = solicitud.monto_estimado
+            if monto is None or not monto.is_finite() or monto < 0:
+                return Response({'detalle': 'Debe registrar un importe válido antes de aprobar la compra.'}, status=400)
+            if connection.vendor != 'postgresql':
+                return Response({'detalle': 'El control concurrente de Caja Chica requiere PostgreSQL.'}, status=503)
+            # Un bloqueo por período protege también un fondo que aún no tiene aprobaciones.
+            # Si la espera cruza de mes, se adquiere el bloqueo del período de aprobación real.
+            while True:
+                local = timezone.localtime(timezone.now(), ZoneInfo('America/La_Paz'))
+                periodo = local.year * 100 + local.month
+                with connection.cursor() as cursor:
+                    cursor.execute('SELECT pg_advisory_xact_lock(%s, %s)', [0x534941, periodo])
+                aprobado_en = timezone.now()
+                fecha = timezone.localtime(aprobado_en, ZoneInfo('America/La_Paz'))
+                if fecha.year * 100 + fecha.month == periodo:
+                    break
+            snapshot = saldo_mensual(aprobado_en)
+            if not snapshot['saldo_verificable']:
+                return Response({'detalle': snapshot['detalle']}, status=400)
+            saldo = Decimal(snapshot['saldo_disponible'])
+            if monto > saldo:
+                return Response({'detalle': (
+                    'No se puede aprobar la compra porque el saldo disponible de Caja Chica es insuficiente. '
+                    f'Saldo disponible: Bs {saldo:.2f}.'
+                )}, status=400)
+            snapshot = {**snapshot, 'total_aprobado': format(Decimal(snapshot['total_aprobado']) + monto, '.2f'),
+                        'saldo_disponible': format(saldo - monto, '.2f')}
+        respuesta = self._transicion(request, solicitud, 'DAR_VISTO_BUENO', ['VERIFICADO_PENDIENTE_AUTORIZACION'],
+                                    'APROBADO_PARA_DESEMBOLSO', 'VISTO_BUENO_DIRECTOR',
+                                    'Director autorizó; expediente derivado automáticamente a Tesorería para desembolso.')
+        if snapshot and 200 <= respuesta.status_code < 300:
+            emitir_documento(request, solicitud, TIPO_APROBACION_CAJA_CHICA, {
+                'monto_aprobado': format(solicitud.monto_estimado, '.2f'),
+                'aprobado_en': aprobado_en.isoformat(), 'caja_chica': snapshot,
+            })
+        return respuesta
 
     @action(detail=True, methods=["post"], url_path="rechazar")
     def rechazar(self, request, pk=None):

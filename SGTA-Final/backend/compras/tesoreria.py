@@ -1,6 +1,8 @@
 """Recibos imprimibles y respaldos privados de la entrega de fondos."""
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from uuid import uuid4
+from zoneinfo import ZoneInfo
+from django.conf import settings
 from django.core.files.base import ContentFile
 from django.db import transaction
 from django.http import FileResponse
@@ -12,6 +14,73 @@ from auditoria.utils import registrar_bitacora
 from soporte.informes_pdf import _documento_pdf
 from .models import ReciboTesoreria, SolicitudCompra
 from .serializers import MontoEstimadoField
+
+TIPO_APROBACION_CAJA_CHICA = 'Aprobación de Caja Chica'
+ESTADOS_APROBADOS = (
+    'APROBADO_PARA_DESEMBOLSO', 'FONDOS_DESEMBOLSADOS', 'COMPRA_REGISTRADA',
+    'COMPRADO_Y_ENTREGADO', 'DESCARGO_PENDIENTE_LIQUIDACION', 'CERRADO_ARCHIVADO',
+)
+
+
+def puede_consultar_saldo(usuario):
+    from .views import tiene_permiso
+    return any(tiene_permiso(usuario, permiso) for permiso in (
+        'DAR_VISTO_BUENO', 'CERTIFICAR_PRESUPUESTO', 'REGISTRAR_DESEMBOLSO',
+    ))
+
+
+def saldo_mensual(ahora=None):
+    """Consume una vez cada aprobación verificable; nunca infiere su mes de actualizado_en."""
+    from usuarios.models import DocumentoProceso
+    from auditoria.models import Bitacora
+    from django.utils.dateparse import parse_datetime
+    ahora = ahora or timezone.now()
+    local = timezone.localtime(ahora, ZoneInfo('America/La_Paz'))
+    inicio = local.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    fin = inicio.replace(year=inicio.year + 1, month=1) if inicio.month == 12 else inicio.replace(month=inicio.month + 1)
+    aprobadas = list(SolicitudCompra.objects.filter(
+        via_adquisicion='CAJA_CHICA', estado__in=ESTADOS_APROBADOS,
+    ).values('pk', 'codigo', 'monto_estimado'))
+    instantaneas = {}
+    for documento in DocumentoProceso.objects.filter(
+        compra_id__in=[s['pk'] for s in aprobadas], tipo=TIPO_APROBACION_CAJA_CHICA,
+    ).order_by('creado_en', 'pk'):
+        instantaneas.setdefault(documento.compra_id, documento)
+    fechas_anteriores = {}
+    if len(instantaneas) < len(aprobadas):
+        for registro in Bitacora.objects.filter(accion='VISTO_BUENO_DIRECTOR', modulo='Compras').order_by('fecha', 'pk'):
+            fechas_anteriores.setdefault(registro.detalle.split(':', 1)[0], registro.fecha)
+    total = Decimal('0.00')
+    incidencias = []
+    for solicitud in aprobadas:
+        documento = instantaneas.get(solicitud['pk'])
+        fecha = fechas_anteriores.get(solicitud['codigo'])
+        importe = solicitud['monto_estimado']
+        if documento:
+            try:
+                fecha = parse_datetime(str(documento.contenido.get('aprobado_en', '')))
+            except (TypeError, ValueError):
+                fecha = None
+            importe = documento.contenido.get('monto_aprobado')
+        try:
+            monto = Decimal(str(importe))
+            if not monto.is_finite() or monto < 0:
+                raise InvalidOperation
+        except (InvalidOperation, TypeError, ValueError):
+            monto = None
+        if not fecha or timezone.is_naive(fecha) or fecha > ahora or monto is None:
+            incidencias.append(solicitud['codigo'])
+        elif inicio <= fecha < fin:
+            total += monto
+    fondo = settings.SIA_FONDO_MENSUAL
+    return {
+        'mes': inicio.strftime('%Y-%m'), 'fondo_mensual': format(fondo, '.2f'),
+        'total_aprobado': format(total, '.2f'),
+        'saldo_disponible': format(fondo - total, '.2f') if not incidencias else None,
+        'saldo_verificable': not incidencias, 'aprobaciones_sin_respaldo': incidencias,
+        'calculado_en': ahora.isoformat(),
+        'detalle': ('Existen compras aprobadas sin fecha o importe verificable. Revise sus respaldos antes de aprobar nuevas compras.' if incidencias else ''),
+    }
 
 
 def datos_entrega(data):
@@ -32,6 +101,12 @@ def pdf_recibo(datos):
         SimpleNamespace(codigo=datos['codigo']),
         [('REQUERIMIENTO', [('Objeto de la compra', datos['titulo']), ('Área solicitante', datos['area']), ('Solicitante', datos['solicitante'])]),
          ('ENTREGA DE FONDOS', [('Importe entregado', f"Bs. {datos['monto']}"), ('Método de desembolso', datos['metodo']), ('Nombre completo de quien recibe', datos['recibe']), ('Nombre completo de quien entrega', datos['entrega'])]),
+         ('CAJA CHICA - SALDO AL APROBAR', [
+             ('Período de aprobación', datos.get('saldo_aprobacion', {}).get('mes', 'No registrado')),
+             ('Fondo mensual', 'Bs. ' + datos['saldo_aprobacion']['fondo_mensual'] if datos.get('saldo_aprobacion') else 'No registrado'),
+             ('Total aprobado acumulado', 'Bs. ' + datos['saldo_aprobacion']['total_aprobado'] if datos.get('saldo_aprobacion') else 'No registrado'),
+             ('Saldo restante al aprobar', 'Bs. ' + datos['saldo_aprobacion']['saldo_disponible'] if datos.get('saldo_aprobacion') else 'No se registró un saldo histórico verificable'),
+         ]),
          ('CONFORMIDAD', [('Declaración', 'Quien recibe declara haber recibido el importe indicado para el requerimiento identificado en este recibo.'), ('Respaldo', 'Imprimir, firmar por ambas partes y adjuntar el PDF firmado en Tesorería. Para transferencia o QR, adjuntar también el comprobante de la operación.')])],
         [('Referencia del recibo', datos['referencia']), ('Fecha de emisión', datos['fecha'])],
         unidad='TESORERÍA', espaciado=True, firmas=[([], datos['recibe'], 'Firma de quien recibe'), ([], datos['entrega'], 'Firma de quien entrega')],
@@ -65,6 +140,9 @@ def recibos(view, request):
                  area=s.area.nombre if s.area_id else 'Sin área', entrega=request.user.nombre_completo,
                  usuario_entrega=request.user.pk, referencia=str(referencia),
                  fecha=timezone.localtime().strftime('%d/%m/%Y %H:%M'))
+    aprobacion = s.documentos_sia.filter(tipo=TIPO_APROBACION_CAJA_CHICA).order_by('creado_en', 'pk').first()
+    if aprobacion and aprobacion.contenido.get('caja_chica'):
+        datos['saldo_aprobacion'] = aprobacion.contenido['caja_chica']
     r = ReciboTesoreria(solicitud=s, referencia=referencia, datos=datos, generado_por=request.user)
     r.original.save(f'recibo-{referencia}.pdf', ContentFile(pdf_recibo(datos)), save=False)
     r.save()
