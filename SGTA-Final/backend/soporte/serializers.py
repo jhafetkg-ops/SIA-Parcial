@@ -208,6 +208,10 @@ class TicketSerializer(
                 data[campo] = urlsplit(data[campo]).path
         data['limite_caja_chica'] = str(settings.SIA_LIMITE_CAJA_CHICA)
         data['cotizaciones'] = CotizacionCompraSerializer(instance.cotizaciones.all(), many=True, context=self.context).data
+        request = self.context.get('request')
+        if request and request.user.is_authenticated:
+            from .views import informacion_reapertura
+            data['reapertura'] = informacion_reapertura(instance, request.user)[0]
         return firmar_urls(data, self.context.get('request'))
 
     class Meta:
@@ -774,7 +778,7 @@ class TicketSerializer(
         # TICKET CERRADO
         # --------------------------------------------------
 
-        if obj.cerrado_en:
+        if obj.cerrado_en and obj.estado.codigo == 'CERRADO':
 
             if obj.sla_cumplido is True:
 
@@ -853,7 +857,7 @@ class TicketSerializer(
             return None
 
 
-        if obj.cerrado_en:
+        if obj.cerrado_en and obj.estado.codigo == 'CERRADO':
 
             return 0
 

@@ -228,6 +228,35 @@ def tiene_permiso(
 # OPERADOR DE SOPORTE
 # ==========================================================
 
+def informacion_reapertura(ticket, usuario, ahora=None):
+    """R06: política compartida por la acción y los metadatos del solicitante."""
+    ahora = ahora or timezone.now()
+    dias = settings.SIA_DIAS_REAPERTURA
+    propio = ticket.solicitante_id == usuario.pk
+    cerrado = ticket.estado.codigo == "CERRADO"
+    datos = {"mostrar": propio and cerrado, "permitida": False,
+             "dias": dias, "limite_en": None, "motivo": ""}
+    if not propio:
+        datos['motivo'] = "Solo el solicitante original puede reabrir este ticket."
+        return datos, status.HTTP_403_FORBIDDEN
+    if not tiene_permiso(usuario, "INFORMAR_CONFORMIDAD"):
+        datos['motivo'] = "No tiene permiso para operar sobre este ticket."
+        return datos, status.HTTP_403_FORBIDDEN
+    if not cerrado:
+        datos['motivo'] = "Solo se pueden reabrir tickets que estén cerrados."
+        return datos, status.HTTP_400_BAD_REQUEST
+    if not ticket.cerrado_en or timezone.is_naive(ticket.cerrado_en) or ticket.cerrado_en > ahora:
+        datos['motivo'] = "No es posible determinar la fecha de cierre de este ticket."
+        return datos, status.HTTP_400_BAD_REQUEST
+    limite = ticket.cerrado_en + timedelta(days=dias)
+    datos['limite_en'] = limite.isoformat()
+    if ahora > limite:
+        datos['motivo'] = f"No se puede reabrir el ticket porque han transcurrido más de {dias} días desde su cierre."
+        return datos, status.HTTP_400_BAD_REQUEST
+    datos['permitida'] = True
+    return datos, status.HTTP_200_OK
+
+
 def puede_operar_soporte(
     usuario
 ):
@@ -438,6 +467,30 @@ class EstadoTicketViewSet(
 class TicketViewSet(
     viewsets.ModelViewSet
 ):
+
+    @action(detail=True, methods=['post'], url_path='reabrir')
+    @transaction.atomic
+    def reabrir(self, request, pk=None):
+        ticket = self.get_object()
+        ticket = type(ticket).objects.select_for_update().get(pk=ticket.pk)
+        informacion, codigo = informacion_reapertura(ticket, request.user)
+        if not informacion['permitida']:
+            return Response({'detalle': informacion['motivo']}, status=codigo)
+        estado = obtener_estado('EN_EJECUCION')
+        if not estado:
+            return Response({'detalle': 'No existe el estado EN_EJECUCION.'}, status=400)
+        ticket.estado = estado
+        ticket.save(update_fields=['estado', 'actualizado_en'])
+        registrar_bitacora(
+            request=request, accion='REABRIR_TICKET', modulo='Soporte Técnico',
+            detalle=(f'Se reabrió el ticket {ticket.codigo}: CERRADO → EN_EJECUCION. '
+                     f'Cierre anterior: {ticket.cerrado_en.isoformat()}. Solicitante: {ticket.solicitante_id}.'),
+            nivel='INFO',
+        )
+        return Response({
+            'ok': True, 'mensaje': 'Ticket reabierto. Se encuentra en proceso de atención.',
+            'ticket': self.get_serializer(ticket).data,
+        })
 
     @action(detail=True, methods=['get'], url_path='documentos')
     def documentos(self, request, pk=None):
@@ -3210,8 +3263,10 @@ class TicketViewSet(
             ContentFile(informe_final_jefatura(ticket, informe, validar_firma(request.data.get("firma")), request.user.nombre_completo)),
             save=False,
         )
+        # Reemitir un informe cerrado no reinicia el plazo de R06 ni inventa fechas históricas.
+        if ticket.estado.codigo != 'CERRADO':
+            ticket.cerrado_en = ahora
         ticket.estado = estado_cerrado
-        ticket.cerrado_en = ahora
 
         # BPMN: tras validar el informe, la jefatura lo eleva y una
         # compuerta paralela lo distribuye al Director y al Jefe de

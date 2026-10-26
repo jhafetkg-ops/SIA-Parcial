@@ -42,6 +42,135 @@ class FlujoSoporteCompraTests(APITestCase):
     def autenticar(self, codigo):
         self.client.force_authenticate(self.usuarios[codigo])
 
+    def test_r06_plazo_api_conserva_informacion_y_auditoria(self):
+        from datetime import timedelta
+        from unittest.mock import patch
+        from auditoria.models import Bitacora
+        from usuarios.models import DocumentoProceso
+        ahora = timezone.now()
+        for dias, exceso, permitido in ((0, 0, True), (5, 0, True), (7, 0, True), (7, 1, False), (8, 0, False)):
+            with self.subTest(dias=dias, exceso=exceso):
+                cierre = ahora - timedelta(days=dias, microseconds=exceso)
+                ticket = Ticket.objects.create(
+                    codigo=f'SOP-R06-{dias}-{exceso}', titulo='Ticket original', descripcion='Descripción original',
+                    solicitante=self.usuarios['SOLICITANTE'], area=self.area, categoria=self.categoria,
+                    estado=EstadoTicket.objects.get(codigo='CERRADO'), cerrado_en=cierre,
+                    tecnico_asignado=self.usuarios['ESPECIALISTA'], prioridad='MEDIA', solucion='Solución anterior',
+                    diagnostico='Diagnóstico anterior', informe_final='Informe original',
+                )
+                documento = DocumentoProceso.objects.create(
+                    soporte=ticket, tipo='Informe histórico', codigo_expediente=ticket.codigo,
+                    contenido={'solucion': ticket.solucion}, usuario=self.usuarios['ESPECIALISTA'],
+                    nombre_firmante='ESPECIALISTA',
+                )
+                anterior = Ticket.objects.filter(pk=ticket.pk).values().get()
+                cantidad = Ticket.objects.count()
+                self.autenticar('SOLICITANTE')
+                with patch('django.utils.timezone.now', return_value=ahora):
+                    detalle = self.client.get(f'/api/soporte/tickets/{ticket.pk}/')
+                    self.assertEqual(detalle.data['reapertura']['permitida'], permitido)
+                    r = self.client.post(f'/api/soporte/tickets/{ticket.pk}/reabrir/', {}, format='json')
+                self.assertEqual(r.status_code, 200 if permitido else 400, r.data)
+                ticket.refresh_from_db()
+                self.assertEqual(Ticket.objects.count(), cantidad)
+                self.assertTrue(DocumentoProceso.objects.filter(pk=documento.pk, contenido={'solucion': 'Solución anterior'}).exists())
+                if permitido:
+                    self.assertEqual(ticket.estado.codigo, 'EN_EJECUCION')
+                    self.assertEqual(r.data['ticket']['estado_codigo'], 'EN_EJECUCION')
+                    self.assertFalse(r.data['ticket']['reapertura']['permitida'])
+                    for campo, valor in anterior.items():
+                        if campo not in ('estado_id', 'actualizado_en'):
+                            self.assertEqual(getattr(ticket, campo), valor, campo)
+                    registro = Bitacora.objects.get(accion='REABRIR_TICKET', detalle__contains=ticket.codigo)
+                    self.assertEqual(registro.usuario_id, ticket.solicitante_id)
+                    self.assertIn(cierre.isoformat(), registro.detalle)
+                    # La misma solicitud no puede reabrirse dos veces.
+                    self.assertEqual(self.client.post(f'/api/soporte/tickets/{ticket.pk}/reabrir/', {}).status_code, 400)
+                else:
+                    self.assertEqual(Ticket.objects.filter(pk=ticket.pk).values().get(), anterior)
+                    self.assertFalse(Bitacora.objects.filter(accion='REABRIR_TICKET', detalle__contains=ticket.codigo).exists())
+                    self.assertIn('más de 7 días', r.data['detalle'])
+
+    def test_r06_rechaza_estado_fecha_usuario_y_permiso(self):
+        from datetime import timedelta
+        from usuarios.models import RolPermiso
+        ahora = timezone.now()
+        ticket = Ticket.objects.create(
+            codigo='SOP-R06-RECHAZOS', titulo='Ticket de prueba', descripcion='Original',
+            solicitante=self.usuarios['SOLICITANTE'], area=self.area, categoria=self.categoria,
+            estado=EstadoTicket.objects.get(codigo='CERRADO'), cerrado_en=ahora,
+        )
+        url = f'/api/soporte/tickets/{ticket.pk}/reabrir/'
+        self.autenticar('JEFE_UTIC')
+        anterior = Ticket.objects.filter(pk=ticket.pk).values().get()
+        r = self.client.post(url, {})
+        self.assertEqual(r.status_code, 403)
+        self.assertEqual(r.data['detalle'], 'Solo el solicitante original puede reabrir este ticket.')
+        self.assertEqual(Ticket.objects.filter(pk=ticket.pk).values().get(), anterior)
+        otro = Usuario.objects.create_user(username='otro-r06', email='otro-r06@example.invalid', nombre_completo='Otro solicitante')
+        UsuarioRol.objects.create(usuario=otro, rol=Rol.objects.get(codigo='SOLICITANTE'))
+        self.client.force_authenticate(otro)
+        self.assertEqual(self.client.post(url, {}).status_code, 404)
+        self.assertEqual(Ticket.objects.filter(pk=ticket.pk).values().get(), anterior)
+        self.autenticar('SOLICITANTE')
+        for estado, cierre in (('NUEVO', ahora), ('EN_EJECUCION', ahora), ('CERRADO', None), ('CERRADO', ahora + timedelta(days=1))):
+            Ticket.objects.filter(pk=ticket.pk).update(estado=EstadoTicket.objects.get(codigo=estado), cerrado_en=cierre)
+            anterior = Ticket.objects.filter(pk=ticket.pk).values().get()
+            self.assertEqual(self.client.post(url, {}).status_code, 400)
+            self.assertEqual(Ticket.objects.filter(pk=ticket.pk).values().get(), anterior)
+        Ticket.objects.filter(pk=ticket.pk).update(cerrado_en=ahora - timedelta(days=5))
+        with override_settings(SIA_DIAS_REAPERTURA=3):
+            r = self.client.post(url, {})
+            self.assertEqual(r.status_code, 400)
+            self.assertIn('más de 3 días', r.data['detalle'])
+        Ticket.objects.filter(pk=ticket.pk).update(cerrado_en=ahora)
+        RolPermiso.objects.filter(rol__codigo='SOLICITANTE', permiso__codigo='INFORMAR_CONFORMIDAD').update(activo=False)
+        self.assertEqual(self.client.post(url, {}).status_code, 403)
+        self.assertFalse(self.client.get(url.replace('reabrir/', '')).data['reapertura']['permitida'])
+        self.client.force_authenticate(user=None)
+        self.assertEqual(self.client.post(url, {}).status_code, 401)
+
+    def test_r06_reapertura_y_bitacora_son_atomicas(self):
+        from unittest.mock import patch
+        ticket = Ticket.objects.create(
+            codigo='SOP-R06-TRANSACCION', titulo='Ticket de prueba', descripcion='Original',
+            solicitante=self.usuarios['SOLICITANTE'], area=self.area, categoria=self.categoria,
+            estado=EstadoTicket.objects.get(codigo='CERRADO'), cerrado_en=timezone.now(),
+        )
+        self.autenticar('SOLICITANTE')
+        anterior = Ticket.objects.filter(pk=ticket.pk).values().get()
+        with patch('soporte.views.registrar_bitacora', side_effect=RuntimeError('Fallo de auditoría')):
+            with self.assertRaises(RuntimeError):
+                self.client.post(f'/api/soporte/tickets/{ticket.pk}/reabrir/', {})
+        self.assertEqual(Ticket.objects.filter(pk=ticket.pk).values().get(), anterior)
+
+    def test_r06_reemitir_informe_no_renueva_fecha_historica(self):
+        from datetime import timedelta
+        from usuarios.models import DocumentoProceso
+        for indice, cierre in enumerate((timezone.now() - timedelta(days=8), None)):
+            ticket = Ticket.objects.create(
+                codigo=f'SOP-R06-INFORME-{indice}', titulo='Ticket cerrado', descripcion='Original',
+                solicitante=self.usuarios['SOLICITANTE'], area=self.area, categoria=self.categoria,
+                estado=EstadoTicket.objects.get(codigo='CERRADO'), cerrado_en=cierre,
+                tecnico_asignado=self.usuarios['ESPECIALISTA'], conformidad_usuario=True,
+                diagnostico='Diagnóstico', plan_solucion='Plan', solucion='Reparación',
+                resultado_pruebas='Pruebas correctas', informe_tecnico='Informe técnico',
+            )
+            DocumentoProceso.objects.create(
+                soporte=ticket, tipo='Informe técnico de soporte', codigo_expediente=ticket.codigo,
+                usuario=self.usuarios['ESPECIALISTA'], nombre_firmante='ESPECIALISTA',
+                firma=[[[10, 10], [30, 40]]],
+            )
+            self.autenticar('JEFE_UTIC')
+            r = self.client.post(f'/api/soporte/tickets/{ticket.pk}/elaborar-informe-final/', {
+                'informe_final': 'Informe reemitido', 'firma': [[[20, 20], [60, 40]]],
+            }, format='json')
+            self.assertEqual(r.status_code, 200, r.data)
+            ticket.refresh_from_db()
+            self.assertEqual(ticket.cerrado_en, cierre)
+            self.autenticar('SOLICITANTE')
+            self.assertEqual(self.client.post(f'/api/soporte/tickets/{ticket.pk}/reabrir/', {}).status_code, 400)
+
     def test_r03_prioridad_por_categoria_desde_api(self):
         red = CategoriaTicket.objects.get(codigo='RED')
         # Categoría solo de prueba: no se asume un código de producción para Servidores.
@@ -432,6 +561,7 @@ class FlujoSoporteCompraTests(APITestCase):
         ticket.refresh_from_db()
         self.assertEqual(ticket.estado.codigo, "CERRADO")
         self.assertIsNotNone(ticket.cerrado_en)
+        self.assertTrue(timezone.is_aware(ticket.cerrado_en))
         self.assertTrue(ticket.informe_final_pdf)
         with ticket.informe_final_pdf.open('rb') as archivo:
             pdf = archivo.read()
