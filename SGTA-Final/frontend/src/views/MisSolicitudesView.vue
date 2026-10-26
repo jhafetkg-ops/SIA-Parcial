@@ -808,7 +808,14 @@
           <DocumentosSolicitante v-if="solicitudSeleccionada" :base="solicitudSeleccionada.proceso === 'MANTENIMIENTO' ? '/api/mantenimiento/requerimientos' : '/api/soporte/tickets'" :id="solicitudSeleccionada.id" />
         </section>
 
+        <p v-if="mensajeReapertura || (solicitudSeleccionada?.proceso === 'SOPORTE' && solicitudSeleccionada?.reapertura?.mostrar && !solicitudSeleccionada.reapertura.permitida)" class="modal-error" role="alert">
+          {{ mensajeReapertura || solicitudSeleccionada.reapertura.motivo }}
+        </p>
         <div class="modal-footer">
+
+          <button v-if="solicitudSeleccionada?.proceso === 'SOPORTE' && solicitudSeleccionada?.reapertura?.mostrar && solicitudSeleccionada.reapertura.permitida" class="primary" :disabled="guardando" @click="reabrirTicket">
+            {{ guardando ? 'Reabriendo...' : 'Reabrir ticket' }}
+          </button>
 
           <button
             class="secondary"
@@ -1294,6 +1301,7 @@ const observacionConformidad = ref('')
 const mensajeConformidad = ref('')
 const guardandoConformidad = ref(false)
 const visorEvidencia = ref('')
+const mensajeReapertura = ref('')
 
 const vistaVerificaciones = computed(() => route.query.vista === 'verificaciones')
 watch(() => route.query, query => {
@@ -1849,6 +1857,8 @@ function verDetalle(
   item
 ) {
 
+  mensajeReapertura.value = ''
+
   solicitudSeleccionada.value =
     item
 
@@ -1858,6 +1868,31 @@ function verDetalle(
     true
 }
 
+
+async function reabrirTicket() {
+  const item = solicitudSeleccionada.value
+  if (guardando.value || item?.proceso !== 'SOPORTE' || !item.reapertura?.permitida) return
+  if (!window.confirm(`¿Desea reabrir el ticket ${item.codigo}? Volverá a estar en proceso de atención.`)) return
+  guardando.value = true
+  mensajeReapertura.value = ''
+  try {
+    const respuesta = await fetch(`/api/soporte/tickets/${item.id}/reabrir/`, {
+      method: 'POST', headers: { Authorization: `Token ${token()}`, Accept: 'application/json' },
+    })
+    const datos = await respuesta.json().catch(() => ({}))
+    if (respuesta.status === 401) cerrarSesion()
+    if (!respuesta.ok) throw new Error(datos.detalle || 'No fue posible reabrir el ticket.')
+    await cargarTodo()
+    solicitudSeleccionada.value = solicitudes.value.find(s => s.proceso === 'SOPORTE' && s.id === item.id) || { ...item, ...datos.ticket }
+    mostrarMensaje(datos.mensaje || 'Ticket reabierto. Se encuentra en proceso de atención.')
+  } catch (error) {
+    mensajeReapertura.value = error.message
+    await cargarTodo()
+    solicitudSeleccionada.value = solicitudes.value.find(s => s.proceso === 'SOPORTE' && s.id === item.id) || item
+  } finally {
+    guardando.value = false
+  }
+}
 
 function cerrarDetalle() {
 
