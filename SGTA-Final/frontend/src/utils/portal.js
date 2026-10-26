@@ -11,3 +11,8 @@ export function coincideProceso(item, proceso) {
   const origen = item.proceso || item.origen_modulo || item.jefatura || ''
   return (origen === 'UTIC' ? 'SOPORTE' : origen) === proceso
 }
+
+// Presentación exclusiva del técnico; conserva la prioridad y el SLA recibidos.
+export function prioridadTecnico(ticket) {
+  return ticket?.categoria_codigo === 'RED' ? 'CRITICA' : ticket?.prioridad
+}

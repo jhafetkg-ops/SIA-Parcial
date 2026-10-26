@@ -558,6 +558,14 @@ class Ticket(models.Model):
     # PROPIEDADES ÚTILES
     # ======================================================
 
+    def save(self, *args, **kwargs):
+        # R03 solo afecta altas; la clasificación posterior e históricos se conservan.
+        if self._state.adding and self.categoria_id:
+            categoria = self.categoria
+            if categoria.codigo == "RED" or categoria.nombre.strip().casefold() == "servidores":
+                self.prioridad = "ALTA"
+        return super().save(*args, **kwargs)
+
     @property
     def tiene_sla(self):
 

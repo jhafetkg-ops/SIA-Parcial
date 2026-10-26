@@ -1216,7 +1216,7 @@ class TicketViewSet(
             )
 
 
-        if not ticket.prioridad:
+        if not ticket.prioridad or not ticket.clasificado_en:
 
             return Response(
                 {
