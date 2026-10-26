@@ -1,3 +1,5 @@
+from django.test import override_settings
+from decimal import Decimal
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.utils import timezone
 from django.core.management import call_command
@@ -189,7 +191,7 @@ class FlujoSoporteCompraTests(APITestCase):
             "componente_requerido": "GPU de alta gama",
             "especificaciones_tecnicas": "GPU compatible con el equipo",
             "justificacion_compra": "El equipo no puede operar sin reemplazo.",
-            "costo_estimado": "9999.00",
+            "costo_estimado": "999.00",
         }, format="multipart")
         self.assertEqual(r.status_code, 200, r.data)
 
@@ -430,3 +432,26 @@ class FlujoSoporteCompraTests(APITestCase):
         ticket.refresh_from_db()
         self.assertEqual(ticket.estado.codigo, "EN_EJECUCION")
         self.assertIsNotNone(ticket.inicio_atencion_en)
+
+    def test_r01_limite_total_api_sin_registros_parciales(self):
+        # El costo es el total de la cotización, incluso con cantidad > 1.
+        for limite, montos in (("1000", ("999", "1000", "1000.01", "1001")), ("800", ("800", "900"))):
+            with override_settings(SIA_LIMITE_CAJA_CHICA=Decimal(limite)):
+                for monto in montos:
+                    pk = self.crear_ticket_en_ejecucion("R01", "Equipo")
+                    self.autenticar("ESPECIALISTA")
+                    objeto = Ticket.objects.get(pk=pk)
+                    anterior = (Ticket.objects.filter(pk=pk).values().get())
+                    compras = SolicitudCompra.objects.count()
+                    r = self.client.post(f"/api/soporte/tickets/{pk}/solicitar-requerimiento-componente/", {
+                        "componente_requerido": "Componentes solicitados", "especificaciones_tecnicas": "Compatibles",
+                        "justificacion_compra": "Reemplazo necesario", "cantidad_componente": 3,
+                        "costo_estimado": monto,
+                        "cotizacion_archivo": SimpleUploadedFile("cotizacion.pdf", b"cotizacion"),
+                    }, format="multipart")
+                    rechazado = Decimal(monto) > Decimal(limite)
+                    self.assertEqual(r.status_code, 400 if rechazado else 200, r.data)
+                    self.assertEqual(SolicitudCompra.objects.count(), compras)
+                    if rechazado:
+                        self.assertEqual(Ticket.objects.filter(pk=pk).values().get(), anterior)
+                        self.assertIn("el monto total supera", r.data["costo_estimado"])

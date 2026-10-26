@@ -11,6 +11,7 @@ https://docs.djangoproject.com/en/6.1/ref/settings/
 """
 
 import os
+from decimal import Decimal
 from pathlib import Path
 
 
@@ -250,6 +251,12 @@ LOGIN_MINUTOS_BLOQUEO = 15
 # El token de DRF no expira por sí solo: se fuerza una vida
 # máxima de sesión para reducir la ventana de un token robado.
 SESION_TOKEN_HORAS_VALIDEZ = 12
+
+# Regla R01: límite máximo para solicitudes de artículos de
+# Especialista y Auxiliar de Servicios Generales.
+SIA_LIMITE_CAJA_CHICA = Decimal(
+    os.environ.get('SIA_LIMITE_CAJA_CHICA', '1000')
+)
 
 
 # ==========================================================

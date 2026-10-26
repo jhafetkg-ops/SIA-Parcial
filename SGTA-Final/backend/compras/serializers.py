@@ -1,6 +1,8 @@
 from usuarios.archivos import firmar_urls
 from urllib.parse import urlsplit
 
+from django.conf import settings
+from usuarios.models import obtener_codigos_rol_efectivos
 from rest_framework import serializers
 
 from .models import SolicitudCompra
@@ -272,6 +274,20 @@ class SolicitudCompraSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError({
                 "proforma": "La cotización debe ser PDF, JPG, JPEG o PNG."
             })
+
+        if self.instance is None and set(obtener_codigos_rol_efectivos(
+            self.context["request"].user
+        )).intersection({"ESPECIALISTA", "AUXILIAR_SERVICIOS_GENERALES"}):
+            monto = attrs.get("monto_estimado")
+            if monto is None:
+                raise serializers.ValidationError({"monto_estimado": "Debe indicar el monto total estimado."})
+            if monto > settings.SIA_LIMITE_CAJA_CHICA:
+                limite = format(settings.SIA_LIMITE_CAJA_CHICA, ",.2f").rstrip("0").rstrip(".")
+                limite = limite.replace(",", "_").replace(".", ",").replace("_", ".")
+                raise serializers.ValidationError({"monto_estimado": (
+                    "No se puede registrar la solicitud porque el monto total supera "
+                    f"el límite permitido de Bs {limite}."
+                )})
 
         return attrs
 
