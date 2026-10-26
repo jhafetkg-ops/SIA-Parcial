@@ -1,3 +1,5 @@
+from django.conf import settings
+from compras.cotizaciones import CotizacionCompraSerializer
 from usuarios.archivos import firmar_urls
 from django.utils import timezone
 from rest_framework import serializers
@@ -132,6 +134,8 @@ class RequerimientoMantenimientoSerializer(
         for campo in ("informe_compra", "cotizacion_archivo"):
             if data.get(campo):
                 data[campo] = urlsplit(data[campo]).path
+        data['limite_caja_chica'] = str(settings.SIA_LIMITE_CAJA_CHICA)
+        data['cotizaciones'] = CotizacionCompraSerializer(instance.cotizaciones.all(), many=True, context=self.context).data
         return firmar_urls(data, self.context.get('request'))
 
     class Meta:

@@ -3,6 +3,8 @@ from datetime import timedelta
 from decimal import Decimal, InvalidOperation
 
 from django.conf import settings
+from django.db import transaction
+from compras.cotizaciones import validar_cotizaciones_requerimiento, guardar_cotizaciones_requerimiento
 from django.utils import timezone
 from django.core.files.base import ContentFile
 
@@ -1682,6 +1684,7 @@ class TicketViewSet(
         methods=["post"],
         url_path="solicitar-requerimiento-componente"
     )
+    @transaction.atomic
     def solicitar_requerimiento_componente(
         self,
         request,
@@ -1699,6 +1702,7 @@ class TicketViewSet(
 
 
         ticket = self.get_object()
+        ticket = type(ticket).objects.select_for_update().get(pk=ticket.pk)
 
 
         if not validar_estado_ticket(
@@ -1814,6 +1818,12 @@ class TicketViewSet(
                     f"el límite permitido de Bs {limite}."
                 )}, status=400)
 
+        cotizaciones = []
+        if set(obtener_roles(request.user)).intersection(
+            {"ESPECIALISTA", "AUXILIAR_SERVICIOS_GENERALES"}
+        ):
+            cotizaciones = validar_cotizaciones_requerimiento(request, costo_estimado, componente, cantidad)
+
         ticket.requiere_compra = True
         ticket.cantidad_componente = cantidad
         ticket.componente_requerido = componente
@@ -1822,7 +1832,7 @@ class TicketViewSet(
         ticket.proveedor_cotizacion = proveedor
         ticket.costo_estimado = costo_estimado
         cotizacion_compra = request.FILES.get("cotizacion_archivo") or ticket.cotizacion_archivo
-        if not cotizacion_compra:
+        if not cotizacion_compra and not set(obtener_roles(request.user)).intersection({"ESPECIALISTA", "AUXILIAR_SERVICIOS_GENERALES"}):
             return Response({"detalle": "Adjunte la cotización antes de enviar a jefatura."}, status=400)
         ticket.informe_compra.save(
             f"informe-requerimiento-{ticket.codigo}.pdf",
@@ -1833,6 +1843,8 @@ class TicketViewSet(
 
         # BPMN: el requerimiento viaja con su cotización adjunta.
         cotizacion = request.FILES.get("cotizacion_archivo")
+        if not cotizacion and cotizaciones:
+            cotizacion = cotizaciones[0].validated_data['documento']
 
         if cotizacion:
             ticket.cotizacion_archivo = cotizacion
@@ -1852,6 +1864,8 @@ class TicketViewSet(
             ]
         )
 
+
+        guardar_cotizaciones_requerimiento(cotizaciones, request, soporte=ticket)
 
         registrar_bitacora(
             request=request,
@@ -1908,7 +1922,7 @@ class TicketViewSet(
             return Response({"detalle": "La compra no está pendiente de validación."}, status=400)
         from compras.informes_origen import asegurar_informe_tecnico
         asegurar_informe_tecnico(ticket)
-        if not ticket.cotizacion_archivo:
+        if not ticket.cotizacion_archivo and (ticket.costo_estimado is None or ticket.costo_estimado > 500):
             return Response({"detalle": "El requerimiento del técnico debe incluir su informe generado y la cotización."}, status=400)
         ticket.estado_compra_componente = "VIABLE"
         ticket.save(update_fields=["estado_compra_componente", "actualizado_en"])
@@ -2075,7 +2089,7 @@ class TicketViewSet(
         proforma = ticket.cotizacion_archivo
         poa = request.FILES.get("poa")
         pedido = request.FILES.get("pedido")
-        if not all((informe, proforma, poa, pedido)):
+        if not all((informe, poa, pedido)) or (ticket.costo_estimado is not None and ticket.costo_estimado > 500 and not proforma):
             return Response({"detalle": "Para elevar a DAF se requieren informe técnico, cotización, POA y proveído de jefatura."}, status=400)
 
         solicitud = SolicitudCompra.objects.create(
@@ -2094,6 +2108,8 @@ class TicketViewSet(
             ticket_soporte=ticket,
             informe=informe, proforma=proforma, poa=poa, pedido=pedido,
         )
+
+        ticket.cotizaciones.update(solicitud=solicitud)
 
         ticket.estado_compra_componente = "VIABLE"
         ticket.codigo_compra_vinculada = solicitud.codigo

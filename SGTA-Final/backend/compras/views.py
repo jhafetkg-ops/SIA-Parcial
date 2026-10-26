@@ -285,10 +285,11 @@ class SolicitudCompraViewSet(
 
         if self.action == "list" and self.request.query_params.get("bandeja") == "certificacion":
             queryset = queryset.filter(estado="EVALUADO_PENDIENTE_CERTIFICACION")
-            for campo in ("informe", "proforma", "poa"):
-                queryset = queryset.exclude(**{campo: ""}).exclude(**{campo + "__isnull": True})
-            from django.db.models import Q
-            queryset = queryset.exclude(Q(origen_modulo__in=["SOPORTE", "MANTENIMIENTO"]) & (Q(pedido="") | Q(pedido__isnull=True)))
+            from .expediente import documentos_faltantes
+            completos = [solicitud.pk for solicitud in queryset.select_related(
+                'solicitante', 'requerimiento_mantenimiento__auxiliar_asignado'
+            ) if not documentos_faltantes(solicitud)]
+            queryset = queryset.filter(pk__in=completos)
 
         if self.action == "list" and self.request.query_params.get("bandeja") == "direccion":
             queryset = queryset.exclude(solicitante=usuario)

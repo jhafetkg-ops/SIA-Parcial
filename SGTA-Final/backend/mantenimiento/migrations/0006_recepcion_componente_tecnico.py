@@ -35,6 +35,7 @@ class Migration(migrations.Migration):
 
     dependencies = [
         ("mantenimiento", "0005_estados_bpmn"),
+        ("compras", "0006_entrega_con_acta_y_recepcion"),
     ]
 
     operations = [

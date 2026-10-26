@@ -2,6 +2,8 @@ from usuarios.documentos import documentar, documentos_expediente, pdf_documento
 from decimal import Decimal, InvalidOperation
 
 from django.conf import settings
+from django.db import transaction
+from compras.cotizaciones import validar_cotizaciones_requerimiento, guardar_cotizaciones_requerimiento
 from django.utils import timezone
 from django.core.files.base import ContentFile
 
@@ -952,9 +954,11 @@ class RequerimientoMantenimientoViewSet(
     def guardar_borrador_requerimiento(self, request, pk=None):
         return self._guardar_requerimiento_compra(request, pk, borrador=True)
 
+    @transaction.atomic
     def _guardar_requerimiento_compra(self, request, pk, borrador):
 
         requerimiento = self.get_object()
+        requerimiento = type(requerimiento).objects.select_for_update().get(pk=requerimiento.pk)
 
         if not (
             es_admin(request.user)
@@ -1017,6 +1021,12 @@ class RequerimientoMantenimientoViewSet(
                     f"el límite permitido de Bs {limite}."
                 )}, status=400)
 
+        cotizaciones = []
+        if not borrador and set(obtener_roles(request.user)).intersection(
+            {"ESPECIALISTA", "AUXILIAR_SERVICIOS_GENERALES"}
+        ):
+            cotizaciones = validar_cotizaciones_requerimiento(request, costo, producto, cantidad)
+
         requerimiento.requiere_reposicion = True
         requerimiento.producto_requerido = producto
         requerimiento.especificacion_producto = str(
@@ -1027,7 +1037,7 @@ class RequerimientoMantenimientoViewSet(
         cotizacion_compra = request.FILES.get("cotizacion_archivo") or requerimiento.cotizacion_archivo
         if borrador and request.FILES.get("informe_compra"):
             requerimiento.informe_compra = request.FILES["informe_compra"]
-        if not borrador and not cotizacion_compra:
+        if not borrador and not cotizacion_compra and not set(obtener_roles(request.user)).intersection({"ESPECIALISTA", "AUXILIAR_SERVICIOS_GENERALES"}):
             return Response({"detalle": "Adjunte la cotización antes de enviar a jefatura."}, status=400)
         if not borrador:
             requerimiento.informe_compra.save(
@@ -1038,6 +1048,8 @@ class RequerimientoMantenimientoViewSet(
             requerimiento.estado_compra_componente = "SOLICITADA"
 
         cotizacion = request.FILES.get("cotizacion_archivo")
+        if not cotizacion and cotizaciones:
+            cotizacion = cotizaciones[0].validated_data['documento']
 
         if cotizacion:
             requerimiento.cotizacion_archivo = cotizacion
@@ -1045,6 +1057,8 @@ class RequerimientoMantenimientoViewSet(
         if not borrador:
             self._cambiar_estado(requerimiento, "EN_ESPERA_COMPRA")
         requerimiento.save()
+
+        guardar_cotizaciones_requerimiento(cotizaciones, request, mantenimiento=requerimiento)
 
         registrar_bitacora(
             request=request,
@@ -1112,7 +1126,7 @@ class RequerimientoMantenimientoViewSet(
         from compras.informes_origen import asegurar_informe_tecnico
         informe = asegurar_informe_tecnico(requerimiento)
         cotizacion = requerimiento.cotizacion_archivo
-        if not informe or not cotizacion:
+        if not informe or (not cotizacion and (requerimiento.costo_estimado is None or requerimiento.costo_estimado > 500)):
             return Response({'detalle': 'Revise y adjunte el informe técnico y la cotización antes de validar.'}, status=400)
         requerimiento.informe_compra = informe
         requerimiento.cotizacion_archivo = cotizacion
@@ -1185,7 +1199,7 @@ class RequerimientoMantenimientoViewSet(
         proforma = requerimiento.cotizacion_archivo
         poa = request.FILES.get("poa")
         pedido = request.FILES.get("pedido")
-        if not all((informe, proforma, poa, pedido)):
+        if not all((informe, poa, pedido)) or (requerimiento.costo_estimado is not None and requerimiento.costo_estimado > 500 and not proforma):
             return Response({"detalle": "Para elevar a DAF se requieren informe técnico, cotización, POA y proveído de jefatura."}, status=400)
 
         solicitud = SolicitudCompra.objects.create(
@@ -1211,6 +1225,8 @@ class RequerimientoMantenimientoViewSet(
             proforma=proforma,
             pedido=pedido,
         )
+
+        requerimiento.cotizaciones.update(solicitud=solicitud)
 
         requerimiento.estado_compra_componente = "VIABLE"
         requerimiento.derivado_compra = True

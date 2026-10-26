@@ -147,17 +147,33 @@
                       <label class="campo">Cantidad
                         <input v-model="formComponente.cantidad_requerida" type="number" min="1" class="full-select">
                       </label>
-                      <label class="campo">Costo estimado (Bs.)
+                      <label class="campo">Costo estimado total (Bs.)
                         <input v-monto inputmode="decimal" pattern="[0-9]+([.][0-9]{1,2})?" v-model="formComponente.costo_estimado" type="text" min="0" max="9999999999.99" step="0.01" class="full-select">
                       </label>
                       <a v-if="ordenAbierta?.informe_compra" :href="ordenAbierta.informe_compra" target="_blank">Ver informe de requerimiento generado</a>
-                      <label class="campo">Cotización (obligatoria)
-                        <input type="file" accept="application/pdf,image/*" @change="onCotizacion" class="full-select">
-                      </label>
+                      <template v-if="Number(formComponente.costo_estimado) > 500">
+            <p>Las tres cotizaciones se guardan al enviar el requerimiento; el borrador conserva los datos generales.</p>
+            <div v-for="(cotizacion, indice) in formComponente.cotizaciones" :key="indice">
+              <label class="campo">Proveedor {{ indice + 1 }}
+                <input v-model="cotizacion.proveedor" maxlength="180" placeholder="Nombre o razón social del proveedor">
+              </label>
+              <label class="campo">Precio unitario cotizado (Bs.)
+                <input v-monto v-model="cotizacion.precio_unitario" inputmode="decimal" type="text">
+              </label>
+              <label class="campo">Cotización {{ indice + 1 }} (PDF, JPG, PNG o WEBP; máximo 10 MB)
+                <input type="file" accept="application/pdf,image/jpeg,image/png,image/webp" @change="cotizacion.archivo = $event.target.files?.[0] || null">
+              </label>
+            </div>
+          </template>
+          <label v-else class="campo">Respaldo opcional (PDF, JPG, PNG o WEBP; máximo 10 MB)
+            <input type="file" accept="application/pdf,image/jpeg,image/png,image/webp" @change="onCotizacion">
+          </label>
+          <p v-if="errorRequerimiento" role="alert">{{ errorRequerimiento }}</p>
+          <a v-for="cotizacion in ordenAbierta?.cotizaciones || []" :key="cotizacion.id" :href="cotizacion.documento_url" target="_blank" rel="noopener">Cotización: {{ cotizacion.proveedor }}</a>
 
                       <div class="step-actions mt-2">
                         <button class="reject" @click="cerrarOrden">Cancelar</button>
-                        <button class="step-btn" :disabled="procesando" @click="guardarBorradorCompra">Guardar borrador</button><button class="primary flex-btn" :disabled="procesando||!formComponente.producto_requerido.trim() || !(formComponente.archivo || ordenAbierta?.cotizacion_archivo)" @click="enviarRequerimiento">Enviar requerimiento</button>
+                        <button class="step-btn" :disabled="procesando" @click="guardarBorradorCompra">Guardar borrador</button><button class="primary flex-btn" :disabled="procesando||!formComponente.producto_requerido.trim() || !!errorRequerimiento" @click="enviarRequerimiento">Enviar requerimiento</button>
                       </div>
                     </div>
                   </div>
@@ -204,6 +220,7 @@
 
     <!-- ============================ DETALLE ============================ -->
     <ExpedienteSolicitudModal v-if="detalle" :registro="detalle" @cerrar="detalle=null" @evidencia="abrirEvidencia">
+      <button v-for="cotizacion in detalle.cotizaciones || []" :key="cotizacion.id" class="sia-secondary" @click="abrirEvidencia(cotizacion.documento_url, cotizacion.proveedor)">Ver cotización: {{ cotizacion.proveedor }}</button>
       <div class="mt-detalle-cabecera"><span class="mt-estado">{{ detalle.estado_nombre || detalle.estado_codigo }}</span><span v-if="detalle.prioridad_jefatura">Prioridad: {{ detalle.prioridad_jefatura }}</span></div>
       <InformesTecnicoMantenimiento :id="detalle.id" @ver="abrirEvidencia" />
       <div v-if="detalle.fotografia_trabajo_url || detalle.informe_compra" class="mt-componente"><h3>Informes y anexos adjuntos</h3><button v-if="detalle.fotografia_trabajo_url" class="sia-secondary" @click="abrirEvidencia(detalle.fotografia_trabajo_url, 'Informe técnico adjunto')">Ver informe o fotografía adjunta</button><button v-if="detalle.informe_compra" class="sia-secondary" @click="abrirEvidencia(detalle.informe_compra, 'Informe de requerimiento')">Ver informe de requerimiento</button></div>
@@ -220,6 +237,7 @@ import { solicitarFirma } from '../utils/firma'
 import TablaTecnicoMantenimiento from '../components/TablaTecnicoMantenimiento.vue'
 import InformesTecnicoMantenimiento from '../components/InformesTecnicoMantenimiento.vue'
 import UsuarioHeader from '../components/UsuarioHeader.vue'
+import { errorCotizaciones } from '../utils/monto'
 import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import IconoSigta from '../components/IconoSigta.vue'
 import ExpedienteSolicitudModal from '../components/ExpedienteSolicitudModal.vue'
@@ -461,7 +479,8 @@ const formDiagnostico = reactive({ diagnostico: '', plan_solucion: '', requiere_
 const formComponente = reactive({
   producto_requerido: '', especificacion_producto: '',
   cantidad_requerida: 1, costo_estimado: '', archivo: null, informe: null,
-})
+  cotizaciones: Array.from({ length: 3 }, () => ({ proveedor: '', precio_unitario: '', archivo: null }))})
+const errorRequerimiento = computed(() => errorCotizaciones(formComponente, ordenAbierta.value?.limite_caja_chica))
 const formTrabajo = reactive({ trabajo_realizado: '', observaciones_trabajo: '' })
 const formPruebas = reactive({ resultado_pruebas: '' })
 const formInforme = reactive({ informe_trabajo: '', fotografia: null })
@@ -500,6 +519,7 @@ function recibirOrden(item) {
   formComponente.especificacion_producto = item.especificacion_producto || ''
   formComponente.cantidad_requerida = item.cantidad_requerida || 1
   formComponente.costo_estimado = item.costo_estimado || ''
+  formComponente.cotizaciones = Array.from({ length: 3 }, () => ({ proveedor: '', precio_unitario: '', archivo: null }))
   formComponente.archivo = null
   formComponente.informe = null
 }
@@ -565,6 +585,7 @@ async function guardarBorradorCompra() {
 }
 
 async function enviarRequerimiento() {
+  if (errorRequerimiento.value) return alert(errorRequerimiento.value)
   procesando.value = true
   try {
     const token = localStorage.getItem('sigta_token');
@@ -595,9 +616,16 @@ async function enviarRequerimiento() {
     datos.append('especificacion_producto', formComponente.especificacion_producto.trim())
     datos.append('cantidad_requerida', String(formComponente.cantidad_requerida || 1))
     if (formComponente.costo_estimado) datos.append('costo_estimado', formComponente.costo_estimado)
-    if (formComponente.archivo) datos.append('cotizacion_archivo', formComponente.archivo)
+    if (Number(formComponente.costo_estimado) <= 500 && formComponente.archivo) datos.append('cotizacion_archivo', formComponente.archivo)
     if (formComponente.informe) datos.append('informe_compra', formComponente.informe)
     
+  if (Number(formComponente.costo_estimado) > 500) {
+    formComponente.cotizaciones.forEach((cotizacion, indice) => {
+      datos.append(`proveedor_${indice + 1}`, cotizacion.proveedor.trim())
+      datos.append(`precio_unitario_${indice + 1}`, cotizacion.precio_unitario)
+      if (cotizacion.archivo) datos.append(`cotizacion_${indice + 1}`, cotizacion.archivo)
+    })
+  }
     await postAccion(ordenAbierta.value, 'solicitar-requerimiento', datos, true)
     
     cerrarOrden()

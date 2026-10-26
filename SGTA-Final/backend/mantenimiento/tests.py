@@ -257,11 +257,11 @@ class FlujoMantenimientoTests(APITestCase):
             f"/api/mantenimiento/requerimientos/{pk}/solicitar-requerimiento/",
             {
             "informe_compra": SimpleUploadedFile("informe.pdf", b"informe con cuadros"),
-            "cotizacion_archivo": SimpleUploadedFile("cotizacion.pdf", b"cotizacion"),
+            "cotizacion_archivo": SimpleUploadedFile("cotizacion.pdf", b"cotizacion", content_type="application/pdf"),
                 "producto_requerido": "Compresor 12000 BTU",
                 "especificacion_producto": "Marca X",
                 "cantidad_requerida": 1,
-                "costo_estimado": "900",
+                "costo_estimado": "450",
             },
             format="multipart",
         )
@@ -329,7 +329,7 @@ class FlujoMantenimientoTests(APITestCase):
             f"/api/mantenimiento/requerimientos/{pk}/solicitar-requerimiento/",
             {
             "informe_compra": SimpleUploadedFile("informe.pdf", b"informe con cuadros"),
-            "cotizacion_archivo": SimpleUploadedFile("cotizacion.pdf", b"cotizacion"),"producto_requerido": "Ventilador", "cantidad_requerida": 1, "costo_estimado": "300"},
+            "cotizacion_archivo": SimpleUploadedFile("cotizacion.pdf", b"cotizacion", content_type="application/pdf"),"producto_requerido": "Ventilador", "cantidad_requerida": 1, "costo_estimado": "300"},
             format="multipart",
         )
 
@@ -398,7 +398,9 @@ class FlujoMantenimientoTests(APITestCase):
                     r = self.client.post(f"/api/mantenimiento/requerimientos/{pk}/solicitar-requerimiento/", {
                         "producto_requerido": "Componentes solicitados", "cantidad_requerida": 3,
                         "costo_estimado": monto,
-                        "cotizacion_archivo": SimpleUploadedFile("cotizacion.pdf", b"cotizacion"),
+                        **{f"proveedor_{i}": f"Proveedor {i}" for i in range(1, 4)},
+                        **{f"precio_unitario_{i}": "300" for i in range(1, 4)},
+                        **{f"cotizacion_{i}": SimpleUploadedFile(f"cotizacion{i}.pdf", f"cotizacion {i}".encode(), content_type="application/pdf") for i in range(1, 4)},
                     }, format="multipart")
                     rechazado = Decimal(monto) > Decimal(limite)
                     self.assertEqual(r.status_code, 400 if rechazado else 200, r.data)
@@ -406,3 +408,78 @@ class FlujoMantenimientoTests(APITestCase):
                     if rechazado:
                         self.assertEqual(RequerimientoMantenimiento.objects.filter(pk=pk).values().get(), anterior)
                         self.assertIn("el monto total supera", r.data["costo_estimado"])
+
+    def test_r02_cotizaciones_api_y_archivos(self):
+        from compras.models import CotizacionCompra
+        from pathlib import Path
+        from django.conf import settings
+        from rest_framework.authtoken.models import Token
+        from rest_framework.test import APIClient
+        casos = (("500", 0, False, 200), ("500", 1, False, 200),
+                 ("500.01", 0, False, 400), ("700", 0, False, 400),
+                 ("700", 2, False, 400), ("700", 3, True, 400),
+                 ("700", 3, False, 200), ("900", 3, False, 200),
+                 ("1001", 3, False, 400))
+        for monto, numero, repetido, esperado in casos:
+            with self.subTest(monto=monto, numero=numero, repetido=repetido):
+                    from .models import EstadoMantenimiento
+                    pk = self.registrar("R02")
+                    RequerimientoMantenimiento.objects.filter(pk=pk).update(
+                        estado=EstadoMantenimiento.objects.get(codigo="EN_MANTENIMIENTO"),
+                        auxiliar_asignado=self.usuarios["AUXILIAR_SERVICIOS_GENERALES"],
+                    )
+                    self.autenticar("AUXILIAR_SERVICIOS_GENERALES")
+                    usuario = self.usuarios["AUXILIAR_SERVICIOS_GENERALES"]
+                    usuario.must_change_password = False
+                    usuario.save(update_fields=['must_change_password'])
+                    token = Token.objects.get_or_create(user=usuario)[0]
+                    self.client.force_authenticate(user=usuario, token=token)
+                    anterior = RequerimientoMantenimiento.objects.filter(pk=pk).values().get()
+                    registros = CotizacionCompra.objects.count()
+                    archivos = set(Path(settings.SIA_PRIVATE_ROOT).rglob('*'))
+                    datos = {
+                        "producto_requerido": "Componentes", "cantidad_requerida": 2,
+                        "costo_estimado": monto,
+                    }
+                    if Decimal(monto) <= 500 and numero:
+                        datos['cotizacion_archivo'] = SimpleUploadedFile('respaldo.png', b'imagen', content_type='image/png')
+                    else:
+                        for i in range(1, numero + 1):
+                            datos[f'proveedor_{i}'] = '  PROVEEDOR  ' if repetido else f'Proveedor {i}'
+                            datos[f'precio_unitario_{i}'] = '350'
+                            datos[f'cotizacion_{i}'] = SimpleUploadedFile(f'cotizacion{i}.pdf', f'cotizacion {i}'.encode(), content_type='application/pdf')
+                    r = self.client.post(f"/api/mantenimiento/requerimientos/{pk}/solicitar-requerimiento/", datos, format='multipart')
+                    self.assertEqual(r.status_code, esperado, r.data)
+                    if esperado == 400:
+                        self.assertEqual(RequerimientoMantenimiento.objects.filter(pk=pk).values().get(), anterior)
+                        self.assertEqual(CotizacionCompra.objects.count(), registros)
+                        self.assertEqual(set(Path(settings.SIA_PRIVATE_ROOT).rglob('*')), archivos)
+                        self.assertFalse(SolicitudCompra.objects.filter(requerimiento_mantenimiento_id=pk).exists())
+                        if monto == '1001':
+                            self.assertIn('el monto total supera', r.data['costo_estimado'])
+                    elif Decimal(monto) > 500:
+                        objeto = RequerimientoMantenimiento.objects.get(pk=pk)
+                        self.assertEqual(objeto.cotizaciones.count(), 3)
+                        detalle = self.client.get(f"/api/mantenimiento/requerimientos/{pk}/")
+                        self.assertEqual(len(detalle.data['cotizaciones']), 3)
+                        for cotizacion in detalle.data['cotizaciones']:
+                            archivo = APIClient().get(cotizacion['documento_url'])
+                            self.assertEqual(archivo.status_code, 200)
+                            self.assertTrue(b''.join(archivo.streaming_content).startswith(b'cotizacion'))
+                            archivo.close()
+                            self.assertEqual(APIClient().get(cotizacion['documento_url'].split('?')[0]).status_code, 401)
+
+                    if esperado == 200:
+                        self.autenticar("SERVICIOS_GENERALES")
+                        r = self.client.post(f"/api/mantenimiento/requerimientos/{pk}/validar-viabilidad-compra/", {}, format='json')
+                        self.assertEqual(r.status_code, 200, r.data)
+                        r = self.client.post(f"/api/mantenimiento/requerimientos/{pk}/evaluar-viabilidad-compra/", {
+                            'viable': True,
+                            'poa': SimpleUploadedFile('poa.pdf', b'poa', content_type='application/pdf'),
+                            'pedido': SimpleUploadedFile('pedido.pdf', b'pedido', content_type='application/pdf'),
+                        }, format='multipart')
+                        self.assertEqual(r.status_code, 200, r.data)
+                        solicitud = SolicitudCompra.objects.get(requerimiento_mantenimiento_id=pk)
+                        self.assertEqual(solicitud.cotizaciones.count(), 3 if Decimal(monto) > 500 else 0)
+                        from compras.expediente import documentos_faltantes
+                        self.assertEqual(documentos_faltantes(solicitud), [])

@@ -2,6 +2,8 @@ from usuarios.archivos import firmar_urls
 from urllib.parse import urlsplit
 
 from django.conf import settings
+from django.db import transaction
+from .cotizaciones import validar_cotizaciones_requerimiento, guardar_cotizaciones_requerimiento
 from usuarios.models import obtener_codigos_rol_efectivos
 from rest_framework import serializers
 
@@ -232,25 +234,54 @@ class SolicitudCompraSerializer(serializers.ModelSerializer):
 
         return firmar_urls(data, self.context.get('request'))
 
+    @transaction.atomic
     def create(self, validated_data):
 
         request = self.context["request"]
 
         usuario = request.user
 
-        return SolicitudCompra.objects.create(
+        if getattr(self, '_cotizaciones_r02', []):
+            validated_data['proforma'] = self._cotizaciones_r02[0].validated_data['documento']
+
+        solicitud = SolicitudCompra.objects.create(
             codigo=SolicitudCompra.generar_codigo(),
             solicitante=usuario,
             estado="CREADO_PENDIENTE_DAF",
             **validated_data
         )
 
+        guardar_cotizaciones_requerimiento(getattr(self, '_cotizaciones_r02', []), request, solicitud=solicitud)
+        return solicitud
+
     def validate(self, attrs):
+        if self.instance is None and set(obtener_codigos_rol_efectivos(
+            self.context["request"].user
+        )).intersection({"ESPECIALISTA", "AUXILIAR_SERVICIOS_GENERALES"}):
+            monto = attrs.get("monto_estimado")
+            if monto is None:
+                raise serializers.ValidationError({"monto_estimado": "Debe indicar el monto total estimado."})
+            if monto > settings.SIA_LIMITE_CAJA_CHICA:
+                limite = format(settings.SIA_LIMITE_CAJA_CHICA, ",.2f").rstrip("0").rstrip(".")
+                limite = limite.replace(",", "_").replace(".", ",").replace("_", ".")
+                raise serializers.ValidationError({"monto_estimado": (
+                    "No se puede registrar la solicitud porque el monto total supera "
+                    f"el límite permitido de Bs {limite}."
+                )})
+
+        roles_r02 = self.instance is None and bool(set(obtener_codigos_rol_efectivos(
+            self.context["request"].user
+        )).intersection({"ESPECIALISTA", "AUXILIAR_SERVICIOS_GENERALES"}))
+        if roles_r02:
+            self._cotizaciones_r02 = validar_cotizaciones_requerimiento(
+                self.context["request"], attrs["monto_estimado"],
+                attrs.get("especificaciones") or attrs.get("titulo", "Solicitud"), attrs.get("cantidad", 1),
+            )
         # BPMN: la solicitud viaja respaldada por Informe, Proforma y POA.
         # El "pedido" se conserva como documento opcional del expediente.
         if self.instance is None:
             faltantes = [
-                nombre for nombre in ("informe", "proforma", "poa")
+                nombre for nombre in (("informe", "poa") if roles_r02 else ("informe", "proforma", "poa"))
                 if not attrs.get(nombre)
             ]
             if faltantes:
@@ -274,20 +305,6 @@ class SolicitudCompraSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError({
                 "proforma": "La cotización debe ser PDF, JPG, JPEG o PNG."
             })
-
-        if self.instance is None and set(obtener_codigos_rol_efectivos(
-            self.context["request"].user
-        )).intersection({"ESPECIALISTA", "AUXILIAR_SERVICIOS_GENERALES"}):
-            monto = attrs.get("monto_estimado")
-            if monto is None:
-                raise serializers.ValidationError({"monto_estimado": "Debe indicar el monto total estimado."})
-            if monto > settings.SIA_LIMITE_CAJA_CHICA:
-                limite = format(settings.SIA_LIMITE_CAJA_CHICA, ",.2f").rstrip("0").rstrip(".")
-                limite = limite.replace(",", "_").replace(".", ",").replace("_", ".")
-                raise serializers.ValidationError({"monto_estimado": (
-                    "No se puede registrar la solicitud porque el monto total supera "
-                    f"el límite permitido de Bs {limite}."
-                )})
 
         return attrs
 

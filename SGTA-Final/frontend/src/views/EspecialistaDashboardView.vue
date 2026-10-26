@@ -146,17 +146,33 @@
           <label class="campo">Proveedor / referencia de cotización
             <input v-model="formComponente.proveedor_cotizacion" placeholder="Opcional">
           </label>
-          <label class="campo">Costo estimado (Bs.)
+          <label class="campo">Costo estimado total (Bs.)
             <input v-monto inputmode="decimal" pattern="[0-9]+([.][0-9]{1,2})?" v-model="formComponente.costo_estimado" type="text" min="0" step="0.01">
           </label>
           <a v-if="ordenAbierta?.informe_compra" :href="ordenAbierta.informe_compra" target="_blank">Ver informe de requerimiento generado</a>
-          <label class="campo">Cotización / proforma
-            <input type="file" accept="application/pdf,image/*" @change="onCotizacion">
+          <template v-if="Number(formComponente.costo_estimado) > 500">
+            <p>Las tres cotizaciones se guardan al enviar el requerimiento; el borrador conserva los datos generales.</p>
+            <div v-for="(cotizacion, indice) in formComponente.cotizaciones" :key="indice">
+              <label class="campo">Proveedor {{ indice + 1 }}
+                <input v-model="cotizacion.proveedor" maxlength="180" placeholder="Nombre o razón social del proveedor">
+              </label>
+              <label class="campo">Precio unitario cotizado (Bs.)
+                <input v-monto v-model="cotizacion.precio_unitario" inputmode="decimal" type="text">
+              </label>
+              <label class="campo">Cotización {{ indice + 1 }} (PDF, JPG, PNG o WEBP; máximo 10 MB)
+                <input type="file" accept="application/pdf,image/jpeg,image/png,image/webp" @change="cotizacion.archivo = $event.target.files?.[0] || null">
+              </label>
+            </div>
+          </template>
+          <label v-else class="campo">Respaldo opcional (PDF, JPG, PNG o WEBP; máximo 10 MB)
+            <input type="file" accept="application/pdf,image/jpeg,image/png,image/webp" @change="onCotizacion">
           </label>
+          <p v-if="errorRequerimiento" role="alert">{{ errorRequerimiento }}</p>
+          <a v-for="cotizacion in ordenAbierta?.cotizaciones || []" :key="cotizacion.id" :href="cotizacion.documento_url" target="_blank" rel="noopener">Cotización: {{ cotizacion.proveedor }}</a>
           <div class="actions">
             <button @click="cerrarOrden">Cancelar</button>
             <button :disabled="procesando" @click="guardarBorrador">Guardar borrador</button>
-            <button class="primary" :disabled="procesando || !formComponente.componente_requerido.trim() || !formComponente.especificaciones_tecnicas.trim() || !formComponente.justificacion_compra.trim() || !(formComponente.archivo || ordenAbierta?.cotizacion_archivo)" @click="enviarRequerimiento">Enviar requerimiento</button>
+            <button class="primary" :disabled="procesando || !formComponente.componente_requerido.trim() || !formComponente.especificaciones_tecnicas.trim() || !formComponente.justificacion_compra.trim() || !!errorRequerimiento" @click="enviarRequerimiento">Enviar requerimiento</button>
           </div>
         </template>
       </section>
@@ -177,6 +193,7 @@
               <li><b>Expediente</b><span>{{ t.codigo_compra_vinculada || 'aún no generado' }}</span></li>
             </ul>
             <button v-if="t.cotizacion_archivo_url" type="button" class="evidence-button purchase-doc" @click="abrirVisor(t.cotizacion_archivo_url,t.codigo)">📄 Ver cotización enviada</button>
+            <button v-for="cotizacion in t.cotizaciones || []" :key="cotizacion.id" type="button" class="evidence-button purchase-doc" @click="abrirVisor(cotizacion.documento_url, cotizacion.proveedor)">Ver cotización: {{ cotizacion.proveedor }}</button>
             <div class="actions"><button @click="verTicket(t)">Ver detalle</button></div>
           </article>
         </div>
@@ -323,6 +340,7 @@ import { solicitarFirma } from '../utils/firma'
 import DocumentosExpediente from '../components/DocumentosExpediente.vue'
 import UsuarioHeader from '../components/UsuarioHeader.vue'
 import NotificacionesView from './NotificacionesView.vue'
+import { errorCotizaciones } from '../utils/monto'
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import LogoutModal from '../components/LogoutModal.vue'
@@ -505,7 +523,7 @@ async function postAccion(ticket, endpoint, body, esFormData = false) {
     const texto = await r.text()
     let d = {}
     try { d = texto ? JSON.parse(texto) : {} } catch { d = {} }
-    const primerError = Object.values(d).find(valor => typeof valor === 'string')
+    const primerError = Object.values(d).flat().find(valor => typeof valor === 'string')
     if (!r.ok) throw new Error(d.detalle || primerError || texto || `No fue posible completar la acción (HTTP ${r.status}).`)
     if (d.ticket) {
       const indice = tickets.value.findIndex(item => item.id === d.ticket.id)
@@ -589,7 +607,8 @@ function mostrarMensaje(titulo, texto, tipo = 'ok') {
 ========================================================== */
 
 const formDiagnostico = reactive({ diagnostico: '', plan_solucion: '', observaciones_diagnostico: '', requiere_compra: null, archivo: null })
-const formComponente = reactive({ componente_requerido: '', cantidad_componente: 1, especificaciones_tecnicas: '', justificacion_compra: '', proveedor_cotizacion: '', costo_estimado: '', archivo: null })
+const formComponente = reactive({ componente_requerido: '', cantidad_componente: 1, especificaciones_tecnicas: '', justificacion_compra: '', proveedor_cotizacion: '', costo_estimado: '', archivo: null , cotizaciones: Array.from({ length: 3 }, () => ({ proveedor: '', precio_unitario: '', archivo: null }))})
+const errorRequerimiento = computed(() => errorCotizaciones(formComponente, ordenAbierta.value?.limite_caja_chica))
 const formIntervencion = reactive({ solucion: '', acciones_realizadas: '', componentes_utilizados: '', archivo: null })
 const formPruebas = reactive({ resultado_pruebas: '', funciona_tecnicamente: null, informe_tecnico: '', archivo: null })
 
@@ -600,7 +619,7 @@ function recibirOrden(t) {
   formDiagnostico.plan_solucion = ''
   formDiagnostico.observaciones_diagnostico = t.observaciones_diagnostico || ''
   formDiagnostico.requiere_compra = null
-  Object.assign(formComponente, { componente_requerido:t.componente_requerido||'', cantidad_componente:t.cantidad_componente||1, especificaciones_tecnicas:t.especificaciones_tecnicas||'', justificacion_compra:t.justificacion_compra||'', proveedor_cotizacion:t.proveedor_cotizacion||'', costo_estimado:t.costo_estimado||'', archivo:null })
+  Object.assign(formComponente, { componente_requerido:t.componente_requerido||'', cantidad_componente:t.cantidad_componente||1, especificaciones_tecnicas:t.especificaciones_tecnicas||'', justificacion_compra:t.justificacion_compra||'', proveedor_cotizacion:t.proveedor_cotizacion||'', costo_estimado:t.costo_estimado||'', archivo:null, cotizaciones:Array.from({ length: 3 }, () => ({ proveedor:'', precio_unitario:'', archivo:null })) })
 }
 
 function cerrarOrden() {
@@ -643,7 +662,14 @@ function onCotizacion(evento) {
 function datosRequerimiento() {
   const datos = new FormData()
   for (const campo of ['componente_requerido','cantidad_componente','especificaciones_tecnicas','justificacion_compra','proveedor_cotizacion','costo_estimado']) datos.append(campo, formComponente[campo] ?? '')
-  if (formComponente.archivo) datos.append('cotizacion_archivo', formComponente.archivo)
+  if (Number(formComponente.costo_estimado) <= 500 && formComponente.archivo) datos.append('cotizacion_archivo', formComponente.archivo)
+  if (Number(formComponente.costo_estimado) > 500) {
+    formComponente.cotizaciones.forEach((cotizacion, indice) => {
+      datos.append(`proveedor_${indice + 1}`, cotizacion.proveedor.trim())
+      datos.append(`precio_unitario_${indice + 1}`, cotizacion.precio_unitario)
+      if (cotizacion.archivo) datos.append(`cotizacion_${indice + 1}`, cotizacion.archivo)
+    })
+  }
   return datos
 }
 
@@ -655,6 +681,7 @@ async function guardarBorrador() {
 }
 
 async function enviarRequerimiento() {
+  if (errorRequerimiento.value) return alert(errorRequerimiento.value)
   try {
     await postAccion(ordenAbierta.value, 'solicitar-requerimiento-componente', datosRequerimiento(), true)
     cerrarOrden()

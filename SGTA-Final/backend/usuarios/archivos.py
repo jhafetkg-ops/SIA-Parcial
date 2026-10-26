@@ -72,11 +72,13 @@ def archivo_expediente(request, ruta):
         filtro = Q()
         for campo in campos:
             filtro |= Q(**{campo: ruta})
+        filtro |= Q(cotizaciones__documento=ruta)
         obj = queryset.filter(filtro).first()
         if not obj:
             continue
-        for campo in campos:
-            archivo = getattr(obj, campo)
+        archivos = [getattr(obj, campo) for campo in campos]
+        archivos.extend(c.documento for c in obj.cotizaciones.filter(documento=ruta))
+        for archivo in archivos:
             if archivo and archivo.name == ruta:
                 try:
                     stream = archivo.open('rb')
