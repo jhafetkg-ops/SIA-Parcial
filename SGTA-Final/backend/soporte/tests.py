@@ -3,20 +3,23 @@ from decimal import Decimal
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.utils import timezone
 from django.core.management import call_command
-from rest_framework.test import APITestCase
+from rest_framework.test import APITransactionTestCase
 
 from usuarios.models import Area, Rol, Usuario, UsuarioRol
 
 from compras.models import SolicitudCompra
 
 from .models import CategoriaTicket, EstadoTicket, Ticket
+from .views import ESTADOS_CARGA_ACTIVA
 
 
-class FlujoSoporteCompraTests(APITestCase):
+class FlujoSoporteCompraTests(APITransactionTestCase):
     """Cubre el disparo real del subproceso de Compra Caja Chica
     desde un ticket de Soporte Técnico ("¿Requiere compra?"), con
     la cadena Especialista solicita -> Jefe UTIC evalúa viabilidad
     que exige el BPMN oficial."""
+
+    serialized_rollback = True
 
     def setUp(self):
         call_command("cargar_permisos_sigta")
@@ -41,6 +44,135 @@ class FlujoSoporteCompraTests(APITestCase):
 
     def autenticar(self, codigo):
         self.client.force_authenticate(self.usuarios[codigo])
+
+    @override_settings(SIA_MAX_TICKETS_TECNICO=5)
+    def test_r07_asignaciones_api_y_liberacion_de_cupo(self):
+        tecnico = self.usuarios['ESPECIALISTA']
+        self.autenticar('JEFE_UTIC')
+        for indice in range(6):
+            if indice == 4:
+                for indice_excluido, codigo in enumerate(('EN_VERIFICACION', 'PENDIENTE_CONFORMIDAD', 'PENDIENTE_INFORME_FINAL', 'CERRADO')):
+                    Ticket.objects.create(
+                        codigo=f'SOP-R07-EXCL-{indice_excluido}', titulo='Trabajo resuelto', descripcion='No ocupa cupo',
+                        solicitante=self.usuarios['SOLICITANTE'], area=self.area, categoria=self.categoria,
+                        estado=EstadoTicket.objects.get(codigo=codigo), tecnico_asignado=tecnico,
+                    )
+            ticket = Ticket.objects.create(
+                codigo=f'SOP-R07-API-{indice}', titulo='Solicitud', descripcion='Prueba de carga',
+                solicitante=self.usuarios['SOLICITANTE'], area=self.area, categoria=self.categoria,
+                estado=EstadoTicket.objects.get(codigo='EN_ANALISIS'),
+                prioridad='MEDIA', clasificado_en=timezone.now(),
+            )
+            anterior = Ticket.objects.filter(pk=ticket.pk).values().get()
+            r = self.client.post(f'/api/soporte/tickets/{ticket.pk}/designar-revision/', {'tecnico_id': tecnico.pk}, format='json')
+            self.assertEqual(r.status_code, 200 if indice < 5 else 400, r.data)
+            if indice == 5:
+                self.assertIn('5 tickets activos', str(r.data))
+                self.assertEqual(Ticket.objects.filter(pk=ticket.pk).values().get(), anterior)
+        # Resolver uno libera un cupo; no se cambia ningún otro ticket.
+        activo = Ticket.objects.filter(tecnico_asignado=tecnico, estado__codigo__in=ESTADOS_CARGA_ACTIVA).first()
+        activo.estado = EstadoTicket.objects.get(codigo='PENDIENTE_CONFORMIDAD')
+        activo.save(update_fields=['estado'])
+        r = self.client.post(f'/api/soporte/tickets/{ticket.pk}/designar-revision/', {'tecnico_id': tecnico.pk}, format='json')
+        self.assertEqual(r.status_code, 200, r.data)
+        self.assertEqual(Ticket.objects.filter(tecnico_asignado=tecnico, estado__codigo__in=ESTADOS_CARGA_ACTIVA).count(), 5)
+
+    @override_settings(SIA_MAX_TICKETS_TECNICO=3)
+    def test_r07_reasignacion_sin_afectar_guardados_o_reapertura(self):
+        tecnico = self.usuarios['ESPECIALISTA']
+        otro = Usuario.objects.create_user(username='tecnico-r07', email='tecnico-r07@example.invalid', nombre_completo='Otro técnico')
+        UsuarioRol.objects.create(usuario=otro, rol=Rol.objects.get(codigo='ESPECIALISTA'))
+        for indice, codigo in enumerate(('ASIGNADO', 'EN_DIAGNOSTICO', 'EN_EJECUCION', 'EN_VERIFICACION', 'PENDIENTE_CONFORMIDAD', 'PENDIENTE_INFORME_FINAL', 'CERRADO')):
+            Ticket.objects.create(
+                codigo=f'SOP-R07-MODELO-{indice}', titulo='Solicitud', descripcion='Carga de prueba',
+                solicitante=self.usuarios['SOLICITANTE'], area=self.area, categoria=self.categoria,
+                estado=EstadoTicket.objects.get(codigo=codigo), tecnico_asignado=tecnico,
+                cerrado_en=timezone.now() if codigo == 'CERRADO' else None,
+            )
+        self.assertEqual(Ticket.objects.filter(tecnico_asignado=tecnico, estado__codigo__in=ESTADOS_CARGA_ACTIVA).count(), 3)
+        existente = Ticket.objects.get(codigo='SOP-R07-MODELO-0')
+        existente.titulo = 'Edición sin cambiar responsable'
+        existente.save()
+        existente.save(update_fields=['tecnico_asignado'])
+        reasignado = Ticket.objects.create(
+            codigo='SOP-R07-REASIGNACION', titulo='Otro responsable', descripcion='Original',
+            solicitante=self.usuarios['SOLICITANTE'], area=self.area, categoria=self.categoria,
+            estado=EstadoTicket.objects.get(codigo='EN_ANALISIS'), tecnico_asignado=otro,
+            prioridad='MEDIA', clasificado_en=timezone.now(),
+        )
+        self.autenticar('JEFE_UTIC')
+        anterior = Ticket.objects.filter(pk=reasignado.pk).values().get()
+        r = self.client.post(f'/api/soporte/tickets/{reasignado.pk}/designar-revision/', {'tecnico_id': tecnico.pk}, format='json')
+        self.assertEqual(r.status_code, 400, r.data)
+        self.assertEqual(Ticket.objects.filter(pk=reasignado.pk).values().get(), anterior)
+        # Mantener el mismo técnico, aun con su cupo lleno, no incrementa la carga.
+        existente.estado = EstadoTicket.objects.get(codigo='EN_ANALISIS')
+        existente.prioridad = 'MEDIA'
+        existente.clasificado_en = timezone.now()
+        existente.save()
+        r = self.client.post(f'/api/soporte/tickets/{existente.pk}/designar-revision/', {'tecnico_id': tecnico.pk}, format='json')
+        self.assertEqual(r.status_code, 200, r.data)
+        self.assertEqual(Ticket.objects.filter(tecnico_asignado=tecnico, estado__codigo__in=ESTADOS_CARGA_ACTIVA).count(), 3)
+        # R06 queda intacta: la reapertura NO debe quedar sujeta a R07.
+        cerrado = Ticket.objects.get(codigo='SOP-R07-MODELO-6')
+        cierre_original = cerrado.cerrado_en
+        self.autenticar('SOLICITANTE')
+        self.assertEqual(self.client.post(f'/api/soporte/tickets/{cerrado.pk}/reabrir/', {}).status_code, 200)
+        cerrado.refresh_from_db()
+        self.assertEqual(cerrado.estado.codigo, 'EN_EJECUCION')
+        self.assertEqual(cerrado.cerrado_en, cierre_original)
+        # Ni las transiciones generales ni guardar el modelo consultan el cupo de asignación.
+        resuelto = Ticket.objects.get(codigo='SOP-R07-MODELO-4')
+        resuelto.estado = EstadoTicket.objects.get(codigo='EN_EJECUCION')
+        resuelto.save(update_fields=['estado'])
+        resuelto.refresh_from_db()
+        self.assertEqual(resuelto.estado.codigo, 'EN_EJECUCION')
+        existente.titulo = 'Edición con carga superior al límite'
+        existente.save(update_fields=['titulo'])
+
+    @override_settings(SIA_MAX_TICKETS_TECNICO=5)
+    def test_r07_concurrencia_postgresql_ultimo_cupo(self):
+        from concurrent.futures import ThreadPoolExecutor
+        from threading import Barrier
+        from django.db import connection, connections
+        from rest_framework.test import APIClient
+        if connection.vendor != 'postgresql':
+            self.skipTest('La concurrencia de R07 requiere PostgreSQL real.')
+        tecnico = self.usuarios['ESPECIALISTA']
+        for indice in range(4):
+            Ticket.objects.create(
+                codigo=f'SOP-R07-PG-ACTIVO-{indice}', titulo='Carga existente', descripcion='Original',
+                solicitante=self.usuarios['SOLICITANTE'], area=self.area, categoria=self.categoria,
+                estado=EstadoTicket.objects.get(codigo='ASIGNADO'), tecnico_asignado=tecnico,
+            )
+        candidatos = [Ticket.objects.create(
+            codigo=f'SOP-R07-PG-NUEVO-{indice}', titulo='Asignación concurrente', descripcion='Original',
+            solicitante=self.usuarios['SOLICITANTE'], area=self.area, categoria=self.categoria,
+            estado=EstadoTicket.objects.get(codigo='EN_ANALISIS'), prioridad='ALTA', clasificado_en=timezone.now(),
+        ).pk for indice in range(2)]
+        barrera = Barrier(2)
+
+        def sincronizar_bloqueo(execute, sql, params, many, context):
+            if '"usuarios_usuario"' in sql and 'FOR UPDATE' in sql:
+                barrera.wait(timeout=15)
+            return execute(sql, params, many, context)
+
+        def asignar(pk):
+            try:
+                cliente = APIClient()
+                cliente.force_authenticate(self.usuarios['JEFE_UTIC'])
+                with connections['default'].execute_wrapper(sincronizar_bloqueo):
+                    respuesta = cliente.post(f'/api/soporte/tickets/{pk}/designar-revision/', {'tecnico_id': tecnico.pk}, format='json')
+                return respuesta.status_code
+            finally:
+                connections.close_all()
+
+        with ThreadPoolExecutor(max_workers=2) as ejecutor:
+            resultados = list(ejecutor.map(asignar, candidatos))
+        self.assertEqual(sorted(resultados), [200, 400])
+        self.assertEqual(Ticket.objects.filter(tecnico_asignado=tecnico, estado__codigo__in=ESTADOS_CARGA_ACTIVA).count(), 5)
+        rechazado = Ticket.objects.get(pk__in=candidatos, tecnico_asignado__isnull=True)
+        self.assertEqual(rechazado.estado.codigo, 'EN_ANALISIS')
 
     def test_r06_plazo_api_conserva_informacion_y_auditoria(self):
         from datetime import timedelta
@@ -645,6 +777,7 @@ class FlujoSoporteCompraTests(APITestCase):
         self.assertEqual(ticket.estado.codigo, "EN_EJECUCION")
         self.assertIsNotNone(ticket.inicio_atencion_en)
 
+    @override_settings(SIA_MAX_TICKETS_TECNICO=100)
     def test_r01_limite_total_api_sin_registros_parciales(self):
         # El costo es el total de la cotización, incluso con cantidad > 1.
         for limite, montos in (("1000", ("999", "1000", "1000.01", "1001")), ("800", ("800", "900"))):
@@ -670,6 +803,7 @@ class FlujoSoporteCompraTests(APITestCase):
                         self.assertEqual(Ticket.objects.filter(pk=pk).values().get(), anterior)
                         self.assertIn("el monto total supera", r.data["costo_estimado"])
 
+    @override_settings(SIA_MAX_TICKETS_TECNICO=100)
     def test_r02_cotizaciones_api_y_archivos(self):
         from compras.models import CotizacionCompra
         from pathlib import Path

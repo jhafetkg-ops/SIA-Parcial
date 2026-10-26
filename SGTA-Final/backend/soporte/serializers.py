@@ -208,6 +208,8 @@ class TicketSerializer(
                 data[campo] = urlsplit(data[campo]).path
         data['limite_caja_chica'] = str(settings.SIA_LIMITE_CAJA_CHICA)
         data['cotizaciones'] = CotizacionCompraSerializer(instance.cotizaciones.all(), many=True, context=self.context).data
+        from .views import ESTADOS_CARGA_ACTIVA
+        data['cuenta_carga_activa'] = instance.estado.codigo in ESTADOS_CARGA_ACTIVA
         request = self.context.get('request')
         if request and request.user.is_authenticated:
             from .views import informacion_reapertura
