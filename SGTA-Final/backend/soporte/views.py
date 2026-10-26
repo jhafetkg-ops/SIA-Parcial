@@ -2,6 +2,7 @@ from usuarios.documentos import documentar, documentos_expediente, pdf_documento
 from datetime import timedelta
 from decimal import Decimal, InvalidOperation
 
+from django.conf import settings
 from django.utils import timezone
 from django.core.files.base import ContentFile
 
@@ -1798,6 +1799,20 @@ class TicketViewSet(
                 status=status.HTTP_400_BAD_REQUEST
             )
 
+
+        # R01: costo_estimado es el total que se copia al expediente de compra.
+        if set(obtener_roles(request.user)).intersection(
+            {"ESPECIALISTA", "AUXILIAR_SERVICIOS_GENERALES"}
+        ):
+            if costo_estimado is None or not costo_estimado.is_finite() or costo_estimado < 0:
+                return Response({"costo_estimado": "Monto estimado inválido."}, status=400)
+            if costo_estimado > settings.SIA_LIMITE_CAJA_CHICA:
+                limite = format(settings.SIA_LIMITE_CAJA_CHICA, ",.2f").rstrip("0").rstrip(".")
+                limite = limite.replace(",", "_").replace(".", ",").replace("_", ".")
+                return Response({"costo_estimado": (
+                    "No se puede registrar la solicitud porque el monto total supera "
+                    f"el límite permitido de Bs {limite}."
+                )}, status=400)
 
         ticket.requiere_compra = True
         ticket.cantidad_componente = cantidad

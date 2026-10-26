@@ -1,3 +1,5 @@
+from django.test import override_settings
+from decimal import Decimal
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.core.management import call_command
 from rest_framework.test import APITestCase
@@ -259,7 +261,7 @@ class FlujoMantenimientoTests(APITestCase):
                 "producto_requerido": "Compresor 12000 BTU",
                 "especificacion_producto": "Marca X",
                 "cantidad_requerida": 1,
-                "costo_estimado": "4500",
+                "costo_estimado": "900",
             },
             format="multipart",
         )
@@ -378,3 +380,29 @@ class FlujoMantenimientoTests(APITestCase):
 
         requerimiento = RequerimientoMantenimiento.objects.get(pk=pk)
         self.assertEqual(requerimiento.estado_compra_componente, "VIABLE")
+
+    def test_r01_limite_total_api_sin_registros_parciales(self):
+        # El costo es el total de la cotización, incluso con cantidad > 1.
+        for limite, montos in (("1000", ("999", "1000", "1000.01", "1001")), ("800", ("800", "900"))):
+            with override_settings(SIA_LIMITE_CAJA_CHICA=Decimal(limite)):
+                for monto in montos:
+                    from .models import EstadoMantenimiento
+                    pk = self.registrar("R01")
+                    objeto = RequerimientoMantenimiento.objects.get(pk=pk)
+                    objeto.estado = EstadoMantenimiento.objects.get(codigo="EN_MANTENIMIENTO")
+                    objeto.auxiliar_asignado = self.usuarios["AUXILIAR_SERVICIOS_GENERALES"]
+                    objeto.save()
+                    self.autenticar("AUXILIAR_SERVICIOS_GENERALES")
+                    anterior = (RequerimientoMantenimiento.objects.filter(pk=pk).values().get())
+                    compras = SolicitudCompra.objects.count()
+                    r = self.client.post(f"/api/mantenimiento/requerimientos/{pk}/solicitar-requerimiento/", {
+                        "producto_requerido": "Componentes solicitados", "cantidad_requerida": 3,
+                        "costo_estimado": monto,
+                        "cotizacion_archivo": SimpleUploadedFile("cotizacion.pdf", b"cotizacion"),
+                    }, format="multipart")
+                    rechazado = Decimal(monto) > Decimal(limite)
+                    self.assertEqual(r.status_code, 400 if rechazado else 200, r.data)
+                    self.assertEqual(SolicitudCompra.objects.count(), compras)
+                    if rechazado:
+                        self.assertEqual(RequerimientoMantenimiento.objects.filter(pk=pk).values().get(), anterior)
+                        self.assertIn("el monto total supera", r.data["costo_estimado"])

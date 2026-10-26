@@ -1,6 +1,7 @@
 from usuarios.documentos import documentar, documentos_expediente, pdf_documento
 from decimal import Decimal, InvalidOperation
 
+from django.conf import settings
 from django.utils import timezone
 from django.core.files.base import ContentFile
 
@@ -1001,6 +1002,20 @@ class RequerimientoMantenimientoViewSet(
             costo = Decimal(str(costo)) if costo not in (None, "") else None
         except InvalidOperation:
             return Response({"costo_estimado": "Monto estimado inválido."}, status=400)
+
+        # R01: costo_estimado es el total que se copia al expediente de compra.
+        if not borrador and set(obtener_roles(request.user)).intersection(
+            {"ESPECIALISTA", "AUXILIAR_SERVICIOS_GENERALES"}
+        ):
+            if costo is None or not costo.is_finite() or costo < 0:
+                return Response({"costo_estimado": "Monto estimado inválido."}, status=400)
+            if costo > settings.SIA_LIMITE_CAJA_CHICA:
+                limite = format(settings.SIA_LIMITE_CAJA_CHICA, ",.2f").rstrip("0").rstrip(".")
+                limite = limite.replace(",", "_").replace(".", ",").replace("_", ".")
+                return Response({"costo_estimado": (
+                    "No se puede registrar la solicitud porque el monto total supera "
+                    f"el límite permitido de Bs {limite}."
+                )}, status=400)
 
         requerimiento.requiere_reposicion = True
         requerimiento.producto_requerido = producto
