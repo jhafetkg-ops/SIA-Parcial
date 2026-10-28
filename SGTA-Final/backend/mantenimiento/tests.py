@@ -383,7 +383,7 @@ class FlujoMantenimientoTests(APITestCase):
 
     def test_r01_limite_total_api_sin_registros_parciales(self):
         # El costo es el total de la cotización, incluso con cantidad > 1.
-        for limite, montos in (("1000", ("999", "1000", "1000.01", "1001")), ("800", ("800", "900"))):
+        for limite, montos in (("100", ("99", "100", "100.01", "101")), ("80", ("80", "90"))):
             with override_settings(SIA_LIMITE_CAJA_CHICA=Decimal(limite)):
                 for monto in montos:
                     from .models import EstadoMantenimiento
