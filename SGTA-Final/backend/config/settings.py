@@ -255,11 +255,11 @@ SESION_TOKEN_HORAS_VALIDEZ = 12
 # Regla R01: límite máximo para solicitudes de artículos de
 # Especialista y Auxiliar de Servicios Generales.
 SIA_LIMITE_CAJA_CHICA = Decimal(
-    os.environ.get('SIA_LIMITE_CAJA_CHICA', '1000')
+    os.environ.get('SIA_LIMITE_CAJA_CHICA', '100')
 )
 
-SIA_DIAS_REAPERTURA = int(os.environ.get('SIA_DIAS_REAPERTURA', '7'))
-SIA_MAX_TICKETS_TECNICO = int(os.environ.get('SIA_MAX_TICKETS_TECNICO', '5'))
+SIA_HORAS_REAPERTURA = int(os.environ.get('SIA_HORAS_REAPERTURA', '7'))
+SIA_MAX_TICKETS_TECNICO = int(os.environ.get('SIA_MAX_TICKETS_TECNICO', '1'))
 SIA_FONDO_MENSUAL = Decimal(os.environ.get('SIA_FONDO_MENSUAL', '5000'))
 if not SIA_FONDO_MENSUAL.is_finite() or SIA_FONDO_MENSUAL < 0:
     raise ValueError('SIA_FONDO_MENSUAL debe ser un importe finito no negativo.')
