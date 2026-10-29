@@ -141,10 +141,10 @@ def _categoria_por_defecto():
 # ==========================================================
 
 SLA_POR_PRIORIDAD = {
-    "CRITICA": 4,
-    "ALTA": 8,
-    "MEDIA": 24,
-    "BAJA": 48,
+    "CRITICA": 1,
+    "ALTA": 2,
+    "MEDIA": 3,
+    "BAJA": 4,
 }
 
 

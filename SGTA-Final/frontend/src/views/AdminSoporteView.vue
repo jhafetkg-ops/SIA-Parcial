@@ -2137,10 +2137,10 @@ const slaPreview =
   computed(() => {
 
     const valores = {
-      CRITICA: '4 horas',
-      ALTA: '8 horas',
-      MEDIA: '24 horas',
-      BAJA: '48 horas',
+      CRITICA: '1 hora',
+      ALTA: '2 horas',
+      MEDIA: '3 horas',
+      BAJA: '4 horas',
     }
 
 

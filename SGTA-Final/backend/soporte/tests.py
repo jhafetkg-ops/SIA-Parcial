@@ -45,6 +45,24 @@ class FlujoSoporteCompraTests(APITransactionTestCase):
     def autenticar(self, codigo):
         self.client.force_authenticate(self.usuarios[codigo])
 
+    def test_sla_por_prioridad_en_horas(self):
+        from datetime import timedelta
+        self.autenticar('JEFE_UTIC')
+        for prioridad, horas in (('CRITICA', 1), ('ALTA', 2), ('MEDIA', 3), ('BAJA', 4)):
+            with self.subTest(prioridad=prioridad):
+                ticket = Ticket.objects.create(
+                    codigo=f'SOP-SLA-{prioridad}', titulo='Clasificar SLA', descripcion='Prueba',
+                    solicitante=self.usuarios['SOLICITANTE'], area=self.area,
+                    categoria=self.categoria, estado=EstadoTicket.objects.get(codigo='EN_ANALISIS'),
+                )
+                r = self.client.post(f'/api/soporte/tickets/{ticket.pk}/clasificar-prioridad/', {
+                    'prioridad': prioridad, 'criterio_tecnico': 'Impacto verificado',
+                }, format='json')
+                self.assertEqual(r.status_code, 200, r.data)
+                ticket.refresh_from_db()
+                self.assertEqual(ticket.sla_horas, horas)
+                self.assertEqual(ticket.sla_fecha_limite - ticket.clasificado_en, timedelta(hours=horas))
+
     @override_settings(SIA_MAX_TICKETS_TECNICO=5)
     def test_r07_asignaciones_api_y_liberacion_de_cupo(self):
         tecnico = self.usuarios['ESPECIALISTA']

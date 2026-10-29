@@ -113,6 +113,24 @@ class FlujoMantenimientoTests(APITestCase):
         self.assertEqual(creado["referencia_ubicacion"], "Bloque C, planta baja")
         self.assertEqual(creado["equipo_afectado"], "Luminaria del aula")
 
+    def test_sla_por_prioridad_en_horas(self):
+        from datetime import datetime, timedelta
+        for prioridad, horas in (('URGENTE', 1), ('ALTA', 2), ('MEDIA', 3), ('BAJA', 4)):
+            with self.subTest(prioridad=prioridad):
+                pk = self.registrar()
+                self.autenticar('SERVICIOS_GENERALES')
+                r = self.client.post(f'/api/mantenimiento/requerimientos/{pk}/validar-ticket/', {'es_valido': True}, format='json')
+                self.assertEqual(r.status_code, 200, r.data)
+                r = self.client.post(f'/api/mantenimiento/requerimientos/{pk}/clasificar-prioridad/', {
+                    'prioridad': prioridad, 'criterio_prioridad': 'Impacto verificado',
+                }, format='json')
+                self.assertEqual(r.status_code, 200, r.data)
+                datos = r.data['requerimiento']
+                self.assertEqual(datos['sla_horas'], horas)
+                inicio = datetime.fromisoformat(datos['clasificado_en'].replace('Z', '+00:00'))
+                limite = datetime.fromisoformat(datos['sla_fecha_limite'].replace('Z', '+00:00'))
+                self.assertEqual(limite - inicio, timedelta(hours=horas))
+
     def test_flujo_completo_sin_compra(self):
         pk = self.registrar()
 
@@ -127,11 +145,11 @@ class FlujoMantenimientoTests(APITestCase):
             format="json",
         )
         self.assertEqual(r.status_code, 200, r.data)
-        self.assertEqual(r.data['requerimiento']['sla_horas'], 8)
+        self.assertEqual(r.data['requerimiento']['sla_horas'], 2)
         from datetime import datetime, timedelta
         clasificado = datetime.fromisoformat(r.data['requerimiento']['clasificado_en'].replace('Z', '+00:00'))
         limite = datetime.fromisoformat(r.data['requerimiento']['sla_fecha_limite'].replace('Z', '+00:00'))
-        self.assertEqual(limite - clasificado, timedelta(hours=8))
+        self.assertEqual(limite - clasificado, timedelta(hours=2))
 
         r = self.client.post(
             f"/api/mantenimiento/requerimientos/{pk}/designar-revision/",
