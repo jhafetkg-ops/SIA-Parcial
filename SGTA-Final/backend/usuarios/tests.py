@@ -150,7 +150,7 @@ class GestionUsuariosAdminTests(APITestCase):
             "apellido_materno": "Reyes",
             "nombre_completo": "Wendy Roxana Caillaví Reyes",
             "email": "cualquier-valor@emi.edu.bo",
-            "password": "Temporal2026*",
+            "password": "Temporal2026*Temporal2026*",
             "rol_id": self.rol_solicitante.id,
         }
 
@@ -162,7 +162,7 @@ class GestionUsuariosAdminTests(APITestCase):
 
         self.assertEqual(usuario.email, "wcaillavir@emi.edu.bo")
         self.assertIn("password_temporal", respuesta)
-        self.assertEqual(respuesta["password_temporal"], "Temporal2026*")
+        self.assertEqual(respuesta["password_temporal"], "Temporal2026*Temporal2026*")
         self.assertTrue(usuario.check_password(respuesta["password_temporal"]))
         self.assertNotEqual(usuario.password, respuesta["password_temporal"])
         self.assertTrue(usuario.must_change_password)
@@ -209,7 +209,7 @@ class GestionUsuariosAdminTests(APITestCase):
 
         self.assertEqual(respuesta.status_code, 200, respuesta.data)
         self.assertIn("password_temporal", respuesta.data)
-        self.assertEqual(respuesta.data["password_temporal"], "Temporal2026*")
+        self.assertEqual(respuesta.data["password_temporal"], "Temporal2026*Temporal2026*")
 
         usuario.refresh_from_db()
         self.assertTrue(usuario.check_password(respuesta.data["password_temporal"]))

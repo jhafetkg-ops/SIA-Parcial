@@ -24,7 +24,7 @@ from .models import (
 def generar_password_temporal(aleatoria=False):
     """Genera la clave temporal sin alterar la clave fija usada en las altas."""
     if not aleatoria:
-        return "Temporal2026*"
+        return "Temporal2026*Temporal2026*"
 
     grupos = (
         string.ascii_uppercase,
@@ -34,7 +34,7 @@ def generar_password_temporal(aleatoria=False):
     )
     caracteres = [secrets.choice(grupo) for grupo in grupos]
     alfabeto = "".join(grupos)
-    caracteres.extend(secrets.choice(alfabeto) for _ in range(12))
+    caracteres.extend(secrets.choice(alfabeto) for _ in range(20))
     secrets.SystemRandom().shuffle(caracteres)
     return "".join(caracteres)
 

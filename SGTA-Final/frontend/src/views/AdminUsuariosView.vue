@@ -1895,7 +1895,7 @@ function abrirNuevo() {
 
   limpiarFormulario()
 
-  form.password = 'Temporal2026*'
+  form.password = 'Temporal2026*Temporal2026*'
 
   mostrarModal.value =
     true
