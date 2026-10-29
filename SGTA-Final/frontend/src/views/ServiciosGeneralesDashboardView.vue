@@ -230,7 +230,7 @@ const errorCarga = ref('')
 const itemActivo = ref(null)
 const detalle = ref(null)
 const expedienteAbierto=ref(false), confirmarAsignacion=ref(false), visorEvidencia=ref(''), visorEsImagen=ref(false), visorTitulo=ref('EVIDENCIA DEL SOLICITANTE'), confirmacionCompra=ref(null)
-const prioridades=[{codigo:'BAJA',nombre:'Baja',horas:48},{codigo:'MEDIA',nombre:'Media',horas:24},{codigo:'ALTA',nombre:'Alta',horas:8},{codigo:'URGENTE',nombre:'Urgente',horas:4}]
+const prioridades=[{codigo:'BAJA',nombre:'Baja',horas:4},{codigo:'MEDIA',nombre:'Media',horas:3},{codigo:'ALTA',nombre:'Alta',horas:2},{codigo:'URGENTE',nombre:'Urgente',horas:1}]
 const reporte = ref(null)
 
 const nombre = computed(() => usuario.value.nombre || usuario.value.nombre_completo || 'Jefe de Mantenimiento')
