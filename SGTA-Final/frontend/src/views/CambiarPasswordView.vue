@@ -98,7 +98,7 @@
           <p>La contraseña debe contener:</p>
 
           <ul>
-            <li>Mínimo 8 caracteres</li>
+            <li>Mínimo 24 caracteres</li>
             <li>Una letra mayúscula</li>
             <li>Una letra minúscula</li>
             <li>Un número</li>
@@ -176,6 +176,11 @@ async function cambiarPassword() {
     !confirmarPassword.value
   ) {
     mensaje.value = 'Complete todos los campos.'
+    return
+  }
+
+  if (nuevaPassword.value.length < 24) {
+    mensaje.value = 'La contraseña debe tener al menos 24 caracteres.'
     return
   }
 
